@@ -1,0 +1,16 @@
+# Example config for this project itself
+rules:
+  - id: no-any-types
+    description: "Avoid using 'any' in TypeScript. Prefer explicit types or unknown."
+    severity: general
+    path: "src/"
+    
+  - id: error-handling
+    description: "All async operations must have try/catch error handling."
+    severity: blocker
+    path: "src/"
+    
+  - id: no-console-in-production
+    description: "Remove console.log statements before merging. Use a proper logger or structured logging."
+    severity: nit
+    path: "src/"

@@ -1,0 +1,32 @@
+{
+  "name": "harness-reviewer",
+  "version": "0.1.0",
+  "description": "AI-powered rules-based code review CLI using LangGraph",
+  "main": "dist/index.js",
+  "bin": {
+    "hrev": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "lint": "eslint src/**/*.ts",
+    "test": "jest"
+  },
+  "keywords": ["code-review", "ai", "langgraph", "cli", "typescript"],
+  "license": "MIT",
+  "dependencies": {
+    "@langchain/core": "^0.3.0",
+    "@langchain/langgraph": "^0.2.0",
+    "commander": "^12.0.0",
+    "yaml": "^2.5.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
