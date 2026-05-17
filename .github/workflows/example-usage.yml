@@ -1,0 +1,21 @@
+name: CI with Code Review
+on: [pull_request]
+
+jobs:
+  build-and-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - uses: actions/setup-node@v4
+      
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      
+      # Add code review in one line
+      - uses: the-harness-dev/hrev@v1
+        with:
+          api-key: ${{ secrets.HREV_API_KEY }}
