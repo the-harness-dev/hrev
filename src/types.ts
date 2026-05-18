@@ -35,3 +35,35 @@ export interface Diff {
   files: DiffFile[];
   raw: string;
 }
+
+export type PatternCategory = "architecture" | "data" | "security" | "api" | "design";
+
+export interface DocumentedPattern {
+  id: string;
+  description: string;
+  source: string;
+  category: PatternCategory;
+}
+
+export interface CodePattern {
+  id: string;
+  description: string;
+  category: PatternCategory;
+  frequency: number;
+  totalFiles: number;
+  area: string;
+  examples: string[];
+}
+
+export interface CodeArea {
+  name: string;
+  language: string;
+  sampleFiles: string[];
+  sampleContents: string;
+}
+
+export interface PatternMatch {
+  codePattern: CodePattern;
+  documentedPattern: DocumentedPattern;
+  similarityReasoning: string;
+}

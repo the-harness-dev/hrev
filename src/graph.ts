@@ -1,4 +1,4 @@
-import { StateGraph, Annotation, END } from "@langchain/langgraph";
+import { StateGraph, Annotation } from "@langchain/langgraph";
 import { Rule, ReviewResult, ReviewSummary, Diff, DiffFile } from "./types";
 import { callModel } from "./model";
 import {
@@ -9,6 +9,19 @@ import {
   searchFiles,
   getWorkspaceToolsDescription,
 } from "./workspace";
+import { info, debug, error as logError } from "./logger";
+
+// Workflow interface to avoid 'any' for LangGraph integration
+interface WorkflowGraph {
+  addNode(name: string, fn: (state: typeof ReviewState.State) => Partial<typeof ReviewState.State> | Promise<Partial<typeof ReviewState.State>>): void;
+  addEdge(from: string, to: string): void;
+  addConditionalEdges(from: string, fn: () => string[]): void;
+  compile(): CompiledGraph;
+}
+
+interface CompiledGraph {
+  invoke(input: Partial<typeof ReviewState.State>): Promise<typeof ReviewState.State>;
+}
 
 const ReviewState = Annotation.Root({
   diff: Annotation<Diff>,
@@ -71,7 +84,7 @@ function executeToolCalls(ctx: ReturnType<typeof createWorkspaceContext>, conten
           results.push({
             tool: `searchFiles("${arg}")`,
             result: matches.length > 0
-              ? matches.map((m) => `${m.file}:${m.line}  ${m.text}`).join("\n")
+              ? matches.map((m) => `${m.file}:${String(m.line)}  ${m.text}`).join("\n")
               : "[No matches]",
           });
           break;
@@ -95,8 +108,10 @@ function executeToolCalls(ctx: ReturnType<typeof createWorkspaceContext>, conten
 
 function createRuleNode(rule: Rule, defaultModel?: string) {
   return async (state: typeof ReviewState.State): Promise<Partial<typeof ReviewState.State>> => {
+    info("Evaluating rule", { ruleId: rule.id, severity: rule.severity, path: rule.path, hasDiffContent: !!state.diff.raw });
     // Skip if path constraint not met
     if (rule.path && !diffContainsPath(state.diff.files, rule.path)) {
+      debug("Skipping rule", { ruleId: rule.id, reason: "path constraint not met", expected: rule.path });
       return {
         results: [{
           ruleId: rule.id,
@@ -109,10 +124,21 @@ function createRuleNode(rule: Rule, defaultModel?: string) {
 
     const workspaceRoot = state.workspaceRoot || process.cwd();
     const ctx = createWorkspaceContext(workspaceRoot);
-
     const toolsDescription = getWorkspaceToolsDescription();
 
-    const systemPrompt = `You are a code reviewer. Evaluate the following git diff against this rule.
+    const systemPrompt = `You are reviewing a PROPOSED CHANGE (git diff) to an existing codebase. The rule
+below describes a requirement the codebase must meet.
+
+Your job: determine whether APPLYING this diff would BREAK or INTRODUCE a
+violation of the rule.
+
+- If the diff ADDS code that violates the rule, or REMOVES/MODIFIES code such
+  that it no longer satisfies the rule → FAIL.
+- If the diff does not touch the code relevant to this rule at all → PASS.
+  (The rule may already be satisfied by existing code you cannot see.)
+- If the diff is unrelated but adds a config/metadata reference to this rule
+  (e.g., enabling it in a YAML config) → PASS. The diff is not required to
+  re-implement behavior that already exists.
 
 Rule ID: ${rule.id}
 Rule: ${rule.description}
@@ -120,12 +146,12 @@ Severity: ${rule.severity}
 
 ${toolsDescription}
 
-After any tool exploration, provide your final verdict as JSON:
+After any tool exploration, provide your final verdict:
+If applying the diff WOULD introduce a violation, respond with:
 {"passed": false, "reasoning": "specific explanation of the violation"}
 
-OR
-
-{"passed": true, "reasoning": "explanation of why it complies"}
+If applying the diff would NOT introduce a violation, respond with:
+{"passed": true, "reasoning": "explanation of why the change doesn't violate"}
 
 Your final response MUST include the JSON object.`;
 
@@ -133,9 +159,10 @@ Your final response MUST include the JSON object.`;
 
 ${state.diff.raw}`;
 
+    debug("Sending rule to model", { ruleId: rule.id, systemPromptLen: systemPrompt.length, userPromptLen: userPrompt.length, systemPrompt, userPrompt });
     try {
       // First call - model may request tool usage
-      let response = await callModel(systemPrompt, userPrompt, rule.model || defaultModel);
+      let response = await callModel(systemPrompt, userPrompt, rule.model, defaultModel);
       let content = response.content.trim();
 
       // Check for tool calls and execute them
@@ -156,7 +183,7 @@ ${toolContext}
 Now provide your final evaluation of the diff against the rule. Respond with JSON:
 {"passed": boolean, "reasoning": "..."}`;
 
-        response = await callModel(systemPrompt, followUpPrompt, rule.model || defaultModel);
+        response = await callModel(systemPrompt, followUpPrompt, rule.model, defaultModel);
         content = response.content.trim();
 
         // Check if more tool calls
@@ -168,24 +195,29 @@ Now provide your final evaluation of the diff against the rule. Respond with JSO
       const jsonMatch = content.match(/```json\n?([\s\S]*?)```/) ||
                          content.match(/```\n?([\s\S]*?)```/) ||
                          [null, content];
+      
+      const jsonStr = jsonMatch[1].trim() || content;
+      const rawResult = JSON.parse(jsonStr) as { passed: unknown; reasoning: unknown };
+      const passed = Boolean(rawResult.passed);
+      const reasoning = typeof rawResult.reasoning === "string" ? rawResult.reasoning : "No reasoning provided";
 
-      const jsonStr = jsonMatch[1]?.trim() || content;
-      const parsed = JSON.parse(jsonStr);
+      info("Rule evaluated", { ruleId: rule.id, passed, reasoningLen: reasoning.length, reasoning });
 
       return {
         results: [{
           ruleId: rule.id,
-          passed: Boolean(parsed.passed),
-          reasoning: String(parsed.reasoning || "No reasoning provided"),
+          passed,
+          reasoning,
           severity: rule.severity,
         }],
       };
     } catch (error) {
+      logError("Rule evaluation failed", { ruleId: rule.id, err: error instanceof Error ? error.message : String(error) });
       return {
         results: [{
           ruleId: rule.id,
-          passed: true,
-          reasoning: `Error evaluating rule: ${error instanceof Error ? error.message : String(error)}`,
+          passed: false,
+          reasoning: `INTERNAL ERROR: ${error instanceof Error ? error.message : String(error)}`,
           severity: rule.severity,
         }],
       };
@@ -193,23 +225,25 @@ Now provide your final evaluation of the diff against the rule. Respond with JSO
   };
 }
 
-async function aggregatorNode(state: typeof ReviewState.State): Promise<Partial<typeof ReviewState.State>> {
+function aggregatorNode(state: typeof ReviewState.State): Partial<typeof ReviewState.State> {
   const results = state.results;
+  info("Aggregating results", { resultCount: results.length });
   const failedBlockers = results.filter((r) => !r.passed && r.severity === "blocker");
   const failedGeneral = results.filter((r) => !r.passed && r.severity === "general");
   const failedNits = results.filter((r) => !r.passed && r.severity === "nit");
 
   const passed = failedBlockers.length === 0;
+  info("Aggregation complete", { passed, blockerFails: failedBlockers.length, generalFails: failedGeneral.length, nitFails: failedNits.length });
 
   const summaryLines: string[] = [
     "═".repeat(60),
     "  AI Code Review Results",
     "═".repeat(60),
     "",
-    `${results.length} rules evaluated`,
-    `  ❌ Blockers failed: ${failedBlockers.length}`,
-    `  ⚠️  General failed: ${failedGeneral.length}`,
-    `  💡 Nits: ${failedNits.length}`,
+    `${String(results.length)} rules evaluated`,
+    `  ❌ Blockers failed: ${String(failedBlockers.length)}`,
+    `  ⚠️  General failed: ${String(failedGeneral.length)}`,
+    `  💡 Nits: ${String(failedNits.length)}`,
     "",
     `Overall: ${passed ? "✅ PASSED" : "❌ FAILED"}`,
     "",
@@ -242,8 +276,7 @@ export async function runReview(
   defaultModel?: string,
   workspaceRoot?: string
 ): Promise<ReviewSummary> {
-  // Build the graph with dynamic nodes using 'any' to bypass strict literal types
-  const workflow = new StateGraph(ReviewState) as any;
+  const workflow = new StateGraph(ReviewState) as unknown as WorkflowGraph;
 
   // Add parallel rule nodes
   for (const rule of rules) {

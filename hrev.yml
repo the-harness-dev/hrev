@@ -1,16 +1,53 @@
-# Example config for this project itself
 rules:
-  - id: no-any-types
-    description: "Avoid using 'any' in TypeScript. Prefer explicit types or unknown."
-    severity: general
-    path: "src/"
-    
-  - id: error-handling
-    description: "All async operations must have try/catch error handling."
+  - id: node-logging
+    description: Agent nodes should log when they are entered, their prompt, tool calls, and results
     severity: blocker
-    path: "src/"
-    
-  - id: no-console-in-production
-    description: "Remove console.log statements before merging. Use a proper logger or structured logging."
-    severity: nit
-    path: "src/"
+  - id: aggregator-fails-on-blocker
+    description: The review aggregator must return a failing exit code and status
+      when any rule with severity 'blocker' is violated. General and nit
+      violations must not cause failure.
+    severity: blocker
+  - id: parallel-rule-isolation
+    description: Each LangGraph evaluation node must process exactly one rule
+      independently. Do not batch multiple rules into a single node or share
+      mutable evaluation state across parallel rule executions.
+    severity: blocker
+  - id: path-constraint-skip
+    description: If a rule defines a path constraint, the evaluation must be skipped
+      entirely when the git diff does not modify any file under that path. Do
+      not run the rule against an empty or unrelated diff.
+    severity: blocker
+  - id: model-resolution-hierarchy
+    description: "Resolve the AI model using the exact priority order: first check
+      the rule-level model override, then the project config model, then the
+      HREV_MODEL environment variable. Explicitly error if none is specified."
+    severity: blocker
+  - id: full-diff-context
+    description: Every LangGraph rule evaluation node must receive the complete git
+      diff as input. Do not partition, truncate, or filter the diff per rule.
+    severity: general
+  - id: auto-detect-exactly-one-key
+    description: When auto-detecting API keys, only proceed if exactly one supported
+      environment variable is present. If zero or multiple supported variables
+      are set, do not auto-select and require explicit configuration.
+    severity: general
+  - id: no-hardcoded-default-model
+    description: Do not provide a hardcoded fallback model in the application code.
+      The system must require explicit model configuration and error if none is
+      provided.
+    severity: blocker
+  - id: openai-compatible-api-contract
+    description: All model provider integrations must use standard OpenAI-compatible
+      request/response schemas. Do not rely on provider-specific SDK extensions
+      that break compatibility with proxies or alternative endpoints.
+    severity: blocker
+  - id: per-rule-model-override
+    description: When a rule configuration specifies its own model, that exact model
+      must be used for evaluating that rule, overriding the project default and
+      environment variable.
+    severity: blocker
+  - id: per-rule-reasoning-output
+    description: The review output must include human-readable reasoning for each
+      individual rule result, explaining the rationale for pass or fail. Do not
+      emit only aggregated pass/fail counts.
+    severity: general

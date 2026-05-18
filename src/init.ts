@@ -3,13 +3,27 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import inquirer from "inquirer";
 import YAML from "yaml";
-import { spawnSubAgent } from "./subagent";
+import dotenv from "dotenv";
+import { spawnSubAgent } from "./recommend";
+import { info, error as logError } from "./logger";
+
+interface YamlRule {
+  id: string;
+  description: string;
+  severity: string;
+  path?: string;
+}
+
+interface YamlConfig {
+  model?: string;
+  rules?: YamlRule[];
+}
 
 const STUB_CONFIG = `# hrev configuration
 # Define semantic rules for AI-powered code review
 # Each rule is evaluated independently in parallel
 
-model: gpt-4o
+# model: gpt-4o
 
 rules:
   - id: example-rule
@@ -103,13 +117,13 @@ export async function runInit(): Promise<void> {
 
   // Step 1: Create hrev.yml
   const configPath = join(process.cwd(), "hrev.yml");
-  let config: any = {};
+  let config: YamlConfig = {};
 
   if (existsSync(configPath)) {
     console.log("✓ hrev.yml already exists.");
     try {
       const existing = readFileSync(configPath, "utf-8");
-      config = YAML.parse(existing);
+      config = YAML.parse(existing) as YamlConfig;
     } catch {
       // ignore parse errors
     }
@@ -117,8 +131,9 @@ export async function runInit(): Promise<void> {
     console.log("Creating hrev.yml...");
     writeFileSync(configPath, STUB_CONFIG);
     console.log("✓ Created hrev.yml");
-    config = YAML.parse(STUB_CONFIG);
+    config = YAML.parse(STUB_CONFIG) as YamlConfig;
   }
+  info("Step 1 complete: hrev.yml", { path: configPath, existed: existsSync(configPath) });
 
   // Step 2: Detect git and GitHub
   const isGit = isGitRepo();
@@ -140,6 +155,7 @@ export async function runInit(): Promise<void> {
   } else {
     console.log("\n⚠ Not a git repository.");
   }
+  info("Step 2 complete: git detection", { isGit, isGitHub });
 
   // Step 3: GitHub Actions setup
   if (isGitHub && repoInfo) {
@@ -148,7 +164,7 @@ export async function runInit(): Promise<void> {
     if (existsSync(workflowPath)) {
       console.log("\n✓ GitHub Actions workflow already exists.");
     } else {
-      const { setupWorkflow } = await inquirer.prompt([
+      const { setupWorkflow } = await inquirer.prompt<{ setupWorkflow: boolean }>([
         {
           type: "confirm",
           name: "setupWorkflow",
@@ -168,7 +184,7 @@ export async function runInit(): Promise<void> {
 
   // Step 4: Local env setup
   if (isGit) {
-    const { setupLocal } = await inquirer.prompt([
+    const { setupLocal } = await inquirer.prompt<{ setupLocal: boolean }>([
       {
         type: "confirm",
         name: "setupLocal",
@@ -203,7 +219,7 @@ export async function runInit(): Promise<void> {
       }
 
       // Ask for API key
-      const { apiKey } = await inquirer.prompt([
+      const { apiKey } = await inquirer.prompt<{ apiKey: string }>([
         {
           type: "input",
           name: "apiKey",
@@ -220,11 +236,52 @@ export async function runInit(): Promise<void> {
         writeFileSync(envPath, envContent);
         console.log("✓ API key saved to .env");
       }
+
+      const { apiUrl } = await inquirer.prompt<{ apiUrl: string }>([
+        {
+          type: "input",
+          name: "apiUrl",
+          message: "Enter your API URL:",
+          default: "https://api.openai.com/v1",
+        },
+      ]);
+
+      if (apiUrl) {
+        let envContent = readFileSync(envPath, "utf-8");
+        envContent = envContent.replace(
+          /HREV_API_URL=.*/,
+          `HREV_API_URL=${apiUrl}`
+        );
+        writeFileSync(envPath, envContent);
+        console.log("✓ API URL saved to .env");
+      }
+
+      const { model } = await inquirer.prompt<{ model: string }>([
+        {
+          type: "input",
+          name: "model",
+          message: "Enter the model name (required for review):",
+        },
+      ]);
+
+      if (model) {
+        let envContent = readFileSync(envPath, "utf-8");
+        envContent = envContent.replace(
+          /#?\s*HREV_MODEL=.*/,
+          `HREV_MODEL=${model}`
+        );
+        writeFileSync(envPath, envContent);
+        console.log("✓ Model saved to .env");
+      }
+
+      // Reload .env so subsequent steps can use the newly written values
+      dotenv.config();
+      info("Step 4 complete: .env setup and reload");
     }
   }
 
   // Step 5: Recommend rules using AI agent
-  const { recommendRules } = await inquirer.prompt([
+  const { recommendRules } = await inquirer.prompt<{ recommendRules: boolean }>([
     {
       type: "confirm",
       name: "recommendRules",
@@ -235,17 +292,25 @@ export async function runInit(): Promise<void> {
 
   if (recommendRules) {
     console.log("\n🤖 Spawning agent to analyze project docs...\n");
-    
-    const newRules = await spawnSubAgent(process.cwd());
+    info("Step 5: spawning sub-agent");
+
+    let newRules: RecommendedRule[] = [];
+    try {
+      newRules = await spawnSubAgent(process.cwd());
+    } catch (err) {
+      logError("Sub-agent failed", { err: String(err) });
+      console.error(`  ✗ Agent error: ${err instanceof Error ? err.message : String(err)}`);
+      console.log("  Skipping rule recommendation. Check the debug log for details.");
+    }
 
     if (newRules.length > 0) {
-      console.log(`\nFound ${newRules.length} potential semantic rules:\n`);
+      console.log(`\nFound ${String(newRules.length)} potential semantic rules:\n`);
       for (const rule of newRules) {
         const pathStr = rule.path ? ` [${rule.path}]` : "";
         console.log(`  [${rule.severity.toUpperCase()}] ${rule.description.substring(0, 80)}${rule.description.length > 80 ? "..." : ""}${pathStr}`);
       }
 
-      const { selected } = await inquirer.prompt([
+      const { selected } = await inquirer.prompt<{ selected: number[] }>([
         {
           type: "checkbox",
           name: "selected",
@@ -259,20 +324,21 @@ export async function runInit(): Promise<void> {
       ]);
 
       if (selected.length > 0) {
-        const existingRules = config.rules || [];
-        for (const idx of selected) {
+        const existingRules: YamlRule[] = config.rules ?? [];
+        const selectedIndices = new Set(selected);
+        for (const idx of selectedIndices) {
           const rule = newRules[idx];
           existingRules.push({
             id: rule.id,
             description: rule.description,
             severity: rule.severity,
-            ...(rule.path && { path: rule.path }),
+            ...(rule.path ? { path: rule.path } : {}),
           });
         }
         config.rules = existingRules;
         writeFileSync(configPath, YAML.stringify(config));
 
-        console.log(`\n✓ Added ${selected.length} rule(s) to hrev.yml`);
+        console.log(`\n✓ Added ${String(selected.length)} rule(s) to hrev.yml`);
         console.log("\n📋 Rules added:");
         for (const idx of selected) {
           const rule = newRules[idx];
@@ -280,6 +346,7 @@ export async function runInit(): Promise<void> {
           console.log(`    ${rule.description.substring(0, 100)}${rule.description.length > 100 ? "..." : ""}`);
           console.log(`    Why: ${rule.rationale}`);
         }
+        info("Rules added to config", { count: selected.length, ids: selected.map((i) => newRules[i].id) });
       } else {
         console.log("\nNo rules selected.");
       }

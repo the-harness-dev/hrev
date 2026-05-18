@@ -1,18 +1,36 @@
 #!/usr/bin/env node
 
+import dotenv from "dotenv";
+dotenv.config();
+
 import { runInit } from "./init";
 import { Command } from "commander";
 import { readFileSync } from "fs";
 import { loadConfig } from "./config";
 import { getGitDiff, parseDiff } from "./diff";
 import { runReview } from "./graph";
+import { getLogPath, info } from "./logger";
+
+interface ReviewOptions {
+  config: string;
+  base?: string;
+  head?: string;
+  diff?: string;
+  verbose?: boolean;
+  json?: boolean;
+  debug?: boolean;
+}
 
 const program = new Command();
 
 program
   .command("init")
   .description("Initialize hrev in your project (create config, setup GitHub Actions, etc.)")
-  .action(async () => {
+  .option("--debug", "Enable debug logging to /tmp/hrev-logs/")
+  .action(async (options: { debug?: boolean }) => {
+    if (options.debug) {
+      console.log(`Debug log: ${getLogPath()}`);
+    }
     try {
       await runInit();
     } catch (error) {
@@ -31,7 +49,12 @@ program
   .option("--diff <path>", "Path to a pre-generated diff file")
   .option("-v, --verbose", "Show per-rule evaluation details")
   .option("--json", "Output results as JSON for programmatic use")
-  .action(async (options) => {
+  .option("--debug", "Enable debug logging to /tmp/hrev-logs/")
+  .action(async (options: ReviewOptions) => {
+    if (options.debug) {
+      console.log(`Debug log: ${getLogPath()}`);
+      info("Review started with debug");
+    }
     try {
       const config = loadConfig(options.config);
       
