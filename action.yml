@@ -48,7 +48,7 @@ runs:
 
     - name: Install hrev
       shell: bash
-      run: npm install -g @the-harness-dev/hrev
+      run: npm install -g ${{ github.action_path }}
 
     - name: Detect API key
       id: detect

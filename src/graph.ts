@@ -276,6 +276,10 @@ export async function runReview(
   defaultModel?: string,
   workspaceRoot?: string
 ): Promise<ReviewSummary> {
+  if (!diff.raw || diff.raw.trim().length === 0) {
+    throw new Error("Diff is empty — nothing to review. Make sure your git diff contains changes, or check that your base/head refs are correct.");
+  }
+
   const workflow = new StateGraph(ReviewState) as unknown as WorkflowGraph;
 
   // Add parallel rule nodes
