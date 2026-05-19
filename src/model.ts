@@ -1,6 +1,6 @@
 import { debug, info, error as logError } from "./logger";
 
-const MAX_CONCURRENT_CALLS = 8;
+const MAX_CONCURRENT_CALLS = 3;
 
 class Semaphore {
   private running = 0;
