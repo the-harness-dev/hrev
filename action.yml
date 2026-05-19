@@ -149,10 +149,7 @@ runs:
         {
           printf '## '
           if [ "$passed" = "true" ]; then printf '✅'; else printf '❌'; fi
-          printf ' Harness Reviewer
-
-%s
-' "$summary"
+          printf ' Harness Reviewer\n\n%s\n' "$summary"
         } > "$GITHUB_WORKSPACE/hrev-comment.md"
 
     - name: Post PR comment
