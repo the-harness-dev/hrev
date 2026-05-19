@@ -29,7 +29,7 @@ Each rule is written in plain English. An AI model reads the diff and the rule, 
 ## Installation
 
 ```bash
-npm install -g harness-reviewer
+npm install -g @the-harness-dev/hrev
 ```
 
 ## Configuration
