@@ -48,7 +48,10 @@ runs:
 
     - name: Install hrev
       shell: bash
-      run: npm install -g ${{ github.action_path }}
+      run: |
+        cd ${{ github.action_path }}
+        npm ci
+        npm run build
 
     - name: Detect API key
       id: detect
@@ -128,9 +131,9 @@ runs:
       shell: bash
       run: |
         if [ "${{ inputs.verbose }}" = "true" ]; then
-          hrev --config ${{ inputs.config-file }} --base ${{ inputs.base-ref }} --verbose --json > "$GITHUB_WORKSPACE/hrev-output.json"
+          node ${{ github.action_path }}/dist/cli.js --config ${{ inputs.config-file }} --base ${{ inputs.base-ref }} --verbose --json > "$GITHUB_WORKSPACE/hrev-output.json"
         else
-          hrev --config ${{ inputs.config-file }} --base ${{ inputs.base-ref }} --json > "$GITHUB_WORKSPACE/hrev-output.json"
+          node ${{ github.action_path }}/dist/cli.js --config ${{ inputs.config-file }} --base ${{ inputs.base-ref }} --json > "$GITHUB_WORKSPACE/hrev-output.json"
         fi
         cat "$GITHUB_WORKSPACE/hrev-output.json"
       env:
