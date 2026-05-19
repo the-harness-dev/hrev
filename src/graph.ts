@@ -1,6 +1,8 @@
-import { StateGraph, Annotation, END } from "@langchain/langgraph";
+import { StateGraph, Annotation } from "@langchain/langgraph";
+import { SystemMessage, HumanMessage } from "@langchain/core/messages";
+import { z } from "zod";
 import { Rule, ReviewResult, ReviewSummary, Diff, DiffFile } from "./types";
-import { callModel } from "./model";
+import { callModel, createChatModel } from "./model";
 import {
   createWorkspaceContext,
   readFile,
@@ -9,6 +11,24 @@ import {
   searchFiles,
   getWorkspaceToolsDescription,
 } from "./workspace";
+import { info, debug, error as logError } from "./logger";
+
+const ReviewVerdict = z.object({
+  passed: z.boolean(),
+  reasoning: z.string(),
+});
+
+// Workflow interface to avoid 'any' for LangGraph integration
+interface WorkflowGraph {
+  addNode(name: string, fn: (state: typeof ReviewState.State) => Partial<typeof ReviewState.State> | Promise<Partial<typeof ReviewState.State>>): void;
+  addEdge(from: string, to: string): void;
+  addConditionalEdges(from: string, fn: () => string[]): void;
+  compile(): CompiledGraph;
+}
+
+interface CompiledGraph {
+  invoke(input: Partial<typeof ReviewState.State>): Promise<typeof ReviewState.State>;
+}
 
 const ReviewState = Annotation.Root({
   diff: Annotation<Diff>,
@@ -39,6 +59,7 @@ function executeToolCalls(ctx: ReturnType<typeof createWorkspaceContext>, conten
 
   while ((match = toolRegex.exec(content)) !== null) {
     const [, toolName, arg] = match;
+    debug("Executing tool", { tool: toolName, arg });
 
     try {
       switch (toolName) {
@@ -71,7 +92,7 @@ function executeToolCalls(ctx: ReturnType<typeof createWorkspaceContext>, conten
           results.push({
             tool: `searchFiles("${arg}")`,
             result: matches.length > 0
-              ? matches.map((m) => `${m.file}:${m.line}  ${m.text}`).join("\n")
+              ? matches.map((m) => `${m.file}:${String(m.line)}  ${m.text}`).join("\n")
               : "[No matches]",
           });
           break;
@@ -90,13 +111,18 @@ function executeToolCalls(ctx: ReturnType<typeof createWorkspaceContext>, conten
     }
   }
 
+  if (results.length > 0) {
+    info("Tool calls executed", { count: results.length, tools: results.map((r) => ({ tool: r.tool, resultLen: r.result.length })) });
+  }
+
   return results;
 }
 
 function createRuleNode(rule: Rule, defaultModel?: string) {
   return async (state: typeof ReviewState.State): Promise<Partial<typeof ReviewState.State>> => {
-    // Skip if path constraint not met
+    info("Evaluating rule", { ruleId: rule.id, severity: rule.severity, path: rule.path, hasDiffContent: !!state.diff.raw });
     if (rule.path && !diffContainsPath(state.diff.files, rule.path)) {
+      debug("Skipping rule", { ruleId: rule.id, reason: "path constraint not met", expected: rule.path });
       return {
         results: [{
           ruleId: rule.id,
@@ -109,10 +135,21 @@ function createRuleNode(rule: Rule, defaultModel?: string) {
 
     const workspaceRoot = state.workspaceRoot || process.cwd();
     const ctx = createWorkspaceContext(workspaceRoot);
-
     const toolsDescription = getWorkspaceToolsDescription();
 
-    const systemPrompt = `You are a code reviewer. Evaluate the following git diff against this rule.
+    const systemPrompt = `You are reviewing a PROPOSED CHANGE (git diff) to an existing codebase. The rule
+below describes a requirement the codebase must meet.
+
+Your job: determine whether APPLYING this diff would BREAK or INTRODUCE a
+violation of the rule.
+
+- If the diff ADDS code that violates the rule, or REMOVES/MODIFIES code such
+  that it no longer satisfies the rule → FAIL.
+- If the diff does not touch the code relevant to this rule at all → PASS.
+  (The rule may already be satisfied by existing code you cannot see.)
+- If the diff is unrelated but adds a config/metadata reference to this rule
+  (e.g., enabling it in a YAML config) → PASS. The diff is not required to
+  re-implement behavior that already exists.
 
 Rule ID: ${rule.id}
 Rule: ${rule.description}
@@ -120,12 +157,12 @@ Severity: ${rule.severity}
 
 ${toolsDescription}
 
-After any tool exploration, provide your final verdict as JSON:
+After any tool exploration, provide your final verdict:
+If applying the diff WOULD introduce a violation, respond with:
 {"passed": false, "reasoning": "specific explanation of the violation"}
 
-OR
-
-{"passed": true, "reasoning": "explanation of why it complies"}
+If applying the diff would NOT introduce a violation, respond with:
+{"passed": true, "reasoning": "explanation of why the change doesn't violate"}
 
 Your final response MUST include the JSON object.`;
 
@@ -133,18 +170,16 @@ Your final response MUST include the JSON object.`;
 
 ${state.diff.raw}`;
 
+    debug("Sending rule to model", { ruleId: rule.id, systemPromptLen: systemPrompt.length, userPromptLen: userPrompt.length, systemPrompt, userPrompt });
     try {
-      // First call - model may request tool usage
-      let response = await callModel(systemPrompt, userPrompt, rule.model || defaultModel);
+      let response = await callModel(systemPrompt, userPrompt, rule.model, defaultModel);
       let content = response.content.trim();
 
-      // Check for tool calls and execute them
       let toolResults = executeToolCalls(ctx, content);
       let iterations = 0;
       const maxIterations = 3;
 
       while (toolResults.length > 0 && iterations < maxIterations) {
-        // Build follow-up prompt with tool results
         const toolContext = toolResults.map((tr) =>
           `TOOL: ${tr.tool}\nRESULT:\n${tr.result}\n---`
         ).join("\n");
@@ -156,36 +191,32 @@ ${toolContext}
 Now provide your final evaluation of the diff against the rule. Respond with JSON:
 {"passed": boolean, "reasoning": "..."}`;
 
-        response = await callModel(systemPrompt, followUpPrompt, rule.model || defaultModel);
+        response = await callModel(systemPrompt, followUpPrompt, rule.model, defaultModel);
         content = response.content.trim();
 
-        // Check if more tool calls
         toolResults = executeToolCalls(ctx, content);
         iterations++;
       }
 
-      // Extract JSON from potential markdown code blocks
-      const jsonMatch = content.match(/```json\n?([\s\S]*?)```/) ||
-                         content.match(/```\n?([\s\S]*?)```/) ||
-                         [null, content];
+      const verdict = await extractVerdict(content, systemPrompt, userPrompt, rule.model, defaultModel);
 
-      const jsonStr = jsonMatch[1]?.trim() || content;
-      const parsed = JSON.parse(jsonStr);
+      info("Rule evaluated", { ruleId: rule.id, passed: verdict.passed, reasoningLen: verdict.reasoning.length, reasoning: verdict.reasoning });
 
       return {
         results: [{
           ruleId: rule.id,
-          passed: Boolean(parsed.passed),
-          reasoning: String(parsed.reasoning || "No reasoning provided"),
+          passed: verdict.passed,
+          reasoning: verdict.reasoning,
           severity: rule.severity,
         }],
       };
     } catch (error) {
+      logError("Rule evaluation failed", { ruleId: rule.id, err: error instanceof Error ? error.message : String(error) });
       return {
         results: [{
           ruleId: rule.id,
-          passed: true,
-          reasoning: `Error evaluating rule: ${error instanceof Error ? error.message : String(error)}`,
+          passed: false,
+          reasoning: `INTERNAL ERROR: ${error instanceof Error ? error.message : String(error)}`,
           severity: rule.severity,
         }],
       };
@@ -193,23 +224,81 @@ Now provide your final evaluation of the diff against the rule. Respond with JSO
   };
 }
 
-async function aggregatorNode(state: typeof ReviewState.State): Promise<Partial<typeof ReviewState.State>> {
+async function extractVerdict(
+  content: string,
+  systemPrompt: string,
+  userPrompt: string,
+  model?: string,
+  defaultModel?: string
+): Promise<{ passed: boolean; reasoning: string }> {
+  if (!content.trim()) {
+    return {
+      passed: false,
+      reasoning: "Model returned an empty response — the evaluation could not be completed.",
+    };
+  }
+
+  try {
+    const jsonMatch = content.match(/```json\n?([\s\S]*?)```/) ||
+                       content.match(/```\n?([\s\S]*?)```/) ||
+                       [null, content];
+    
+    const jsonStr = jsonMatch[1].trim() || content;
+    const rawResult = JSON.parse(jsonStr) as { passed: unknown; reasoning: unknown };
+    return {
+      passed: Boolean(rawResult.passed),
+      reasoning: typeof rawResult.reasoning === "string" ? rawResult.reasoning : "No reasoning provided",
+    };
+  } catch {
+    debug("Falling back to structured output for verdict", { contentPreview: content.substring(0, 200) });
+
+    try {
+      const verdictModel = createChatModel(model, defaultModel).withStructuredOutput(ReviewVerdict, {
+        name: "review_verdict",
+        method: "functionCalling",
+      });
+
+      const result = await verdictModel.invoke([
+        new SystemMessage(`Rephrase the following content into a review verdict JSON with fields "passed" (boolean) and "reasoning" (string).`),
+        new HumanMessage(content),
+      ]);
+
+      if (typeof result.passed === "boolean") {
+        return {
+          passed: result.passed,
+          reasoning: result.reasoning || "No reasoning provided",
+        };
+      }
+    } catch {
+      // fall through to raw content extraction
+    }
+
+    return {
+      passed: false,
+      reasoning: `Model returned non-JSON response: ${content.substring(0, 500)}`,
+    };
+  }
+}
+
+function aggregatorNode(state: typeof ReviewState.State): Partial<typeof ReviewState.State> {
   const results = state.results;
+  info("Aggregating results", { resultCount: results.length });
   const failedBlockers = results.filter((r) => !r.passed && r.severity === "blocker");
   const failedGeneral = results.filter((r) => !r.passed && r.severity === "general");
   const failedNits = results.filter((r) => !r.passed && r.severity === "nit");
 
   const passed = failedBlockers.length === 0;
+  info("Aggregation complete", { passed, blockerFails: failedBlockers.length, generalFails: failedGeneral.length, nitFails: failedNits.length });
 
   const summaryLines: string[] = [
     "═".repeat(60),
     "  AI Code Review Results",
     "═".repeat(60),
     "",
-    `${results.length} rules evaluated`,
-    `  ❌ Blockers failed: ${failedBlockers.length}`,
-    `  ⚠️  General failed: ${failedGeneral.length}`,
-    `  💡 Nits: ${failedNits.length}`,
+    `${String(results.length)} rules evaluated`,
+    `  ❌ Blockers failed: ${String(failedBlockers.length)}`,
+    `  ⚠️  General failed: ${String(failedGeneral.length)}`,
+    `  💡 Nits: ${String(failedNits.length)}`,
     "",
     `Overall: ${passed ? "✅ PASSED" : "❌ FAILED"}`,
     "",
@@ -242,8 +331,11 @@ export async function runReview(
   defaultModel?: string,
   workspaceRoot?: string
 ): Promise<ReviewSummary> {
-  // Build the graph with dynamic nodes using 'any' to bypass strict literal types
-  const workflow = new StateGraph(ReviewState) as any;
+  if (!diff.raw || diff.raw.trim().length === 0) {
+    throw new Error("Diff is empty — nothing to review. Make sure your git diff contains changes, or check that your base/head refs are correct.");
+  }
+
+  const workflow = new StateGraph(ReviewState) as unknown as WorkflowGraph;
 
   // Add parallel rule nodes
   for (const rule of rules) {

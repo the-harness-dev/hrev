@@ -1,12 +1,25 @@
+import { ChatOpenAI } from "@langchain/openai";
+import { SystemMessage, HumanMessage } from "@langchain/core/messages";
+import { debug, info, error as logError } from "./logger";
+
 interface ModelResponse {
   content: string;
 }
 
-export async function callModel(
-  systemPrompt: string,
-  userPrompt: string,
-  model?: string
-): Promise<ModelResponse> {
+const MAX_CONCURRENT_CALLS = 3;
+const TIMEOUT = 300_000;
+
+function resolveModel(model?: string, projectModel?: string): string {
+  const resolved = model || projectModel || process.env.HREV_MODEL;
+  if (!resolved) {
+    throw new Error(
+      "No model specified. Priority: rule-level model > project-level model > HREV_MODEL env variable."
+    );
+  }
+  return resolved;
+}
+
+function getApiConfig() {
   const apiUrl = process.env.HREV_API_URL;
   const apiKey = process.env.HREV_API_KEY;
 
@@ -14,38 +27,54 @@ export async function callModel(
     throw new Error("HREV_API_KEY environment variable is required");
   }
 
-  const resolvedModel = model || process.env.HREV_MODEL;
-  if (!resolvedModel) {
-    throw new Error(
-      "No model specified. Set 'model' in hrev.yml (project or rule level) or set HREV_MODEL environment variable."
-    );
-  }
+  return { apiUrl, apiKey };
+}
 
-  const url = apiUrl ? `${apiUrl.replace(/\/$/, "")}/chat/completions` : "https://api.openai.com/v1/chat/completions";
+export function createChatModel(modelName?: string, projectModel?: string): ChatOpenAI {
+  const { apiUrl, apiKey } = getApiConfig();
+  const resolvedModel = resolveModel(modelName, projectModel);
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+  return new ChatOpenAI({
+    modelName: resolvedModel,
+    temperature: 0.1,
+    timeout: TIMEOUT,
+    maxRetries: 2,
+    maxConcurrency: MAX_CONCURRENT_CALLS,
+    configuration: {
+      baseURL: apiUrl || undefined,
+      apiKey,
     },
-    body: JSON.stringify({
-      model: resolvedModel,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.1,
-    }),
   });
+}
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Model API error (${response.status}): ${error}`);
+export async function callModel(
+  systemPrompt: string,
+  userPrompt: string,
+  model?: string,
+  projectModel?: string
+): Promise<ModelResponse> {
+  const chatModel = createChatModel(model, projectModel);
+  const start = Date.now();
+  debug("callModel request", { model: resolveModel(model, projectModel), promptLen: userPrompt.length, systemPrompt, userPrompt });
+
+  try {
+    const response = await chatModel.invoke([
+      new SystemMessage(systemPrompt),
+      new HumanMessage(userPrompt),
+    ]);
+
+    const elapsed = Date.now() - start;
+    const content = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
+    info("callModel response", {
+      elapsed,
+      contentLen: content.length,
+      content,
+    });
+
+    return { content };
+  } catch (err) {
+    const elapsed = Date.now() - start;
+    logError("callModel failed", { elapsed, err: String(err) });
+    throw err;
   }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "";
-
-  return { content };
 }

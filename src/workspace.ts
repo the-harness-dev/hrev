@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 import { join, resolve, relative } from "path";
 import { globSync } from "glob";
 
@@ -54,8 +54,8 @@ export function listFiles(ctx: WorkspaceContext, dirPath: string = "."): string[
 export function globFiles(ctx: WorkspaceContext, pattern: string): string[] {
   try {
     const absolutePattern = join(ctx.root, pattern);
-    const matches = globSync(absolutePattern, { cwd: ctx.root });
-    return matches.map((m) => relative(ctx.root, m));
+    const matches: string[] = globSync(absolutePattern, { cwd: ctx.root });
+    return matches.map((m: string) => relative(ctx.root, m));
   } catch {
     return [];
   }
@@ -73,7 +73,7 @@ export function searchFiles(
   const results: Array<{ file: string; line: number; text: string }> = [];
   try {
     // Use glob to find files, then grep
-    const files = globSync("**/*", {
+    const files: string[] = globSync("**/*", {
       cwd: ctx.root,
       nodir: true,
       ignore: [

@@ -48,7 +48,10 @@ runs:
 
     - name: Install hrev
       shell: bash
-      run: npm install -g harness-reviewer
+      run: |
+        cd ${{ github.action_path }}
+        npm ci
+        npm run build
 
     - name: Detect API key
       id: detect
@@ -99,12 +102,12 @@ runs:
           echo "Example:" >&2
           echo "  - uses: the-harness-dev/hrev@v1" >&2
           echo "    env:" >&2
-          echo "      HREV_API_KEY: \${{ secrets.HREV_API_KEY }}" >&2
+          echo "      HREV_API_KEY: <your-api-key-secret>" >&2
           echo "" >&2
           echo "Or pass api-key explicitly:" >&2
           echo "  - uses: the-harness-dev/hrev@v1" >&2
           echo "    with:" >&2
-          echo "      api-key: \${{ secrets.YOUR_KEY }}" >&2
+          echo "      api-key: <your-api-key>" >&2
           exit 1
         fi
 
@@ -114,7 +117,7 @@ runs:
           echo "Pass the one you want to use:" >&2
           echo "  - uses: the-harness-dev/hrev@v1" >&2
           echo "    with:" >&2
-          echo "      api-key: \${{ secrets.HREV_API_KEY }}" >&2
+          echo "      api-key: <your-api-key>" >&2
           echo "" >&2
           echo "Or unset the ones you don't want to use." >&2
           exit 1
@@ -128,9 +131,9 @@ runs:
       shell: bash
       run: |
         if [ "${{ inputs.verbose }}" = "true" ]; then
-          hrev --config ${{ inputs.config-file }} --base ${{ inputs.base-ref }} --verbose --json > "$GITHUB_WORKSPACE/hrev-output.json"
+          node ${{ github.action_path }}/dist/cli.js --config ${{ inputs.config-file }} --base ${{ inputs.base-ref }} --verbose --json > "$GITHUB_WORKSPACE/hrev-output.json"
         else
-          hrev --config ${{ inputs.config-file }} --base ${{ inputs.base-ref }} --json > "$GITHUB_WORKSPACE/hrev-output.json"
+          node ${{ github.action_path }}/dist/cli.js --config ${{ inputs.config-file }} --base ${{ inputs.base-ref }} --json > "$GITHUB_WORKSPACE/hrev-output.json"
         fi
         cat "$GITHUB_WORKSPACE/hrev-output.json"
       env:
@@ -143,27 +146,14 @@ runs:
       id: parse
       shell: bash
       run: |
-        passed=$(cat "$GITHUB_WORKSPACE/hrev-output.json" | jq -r '.passed')
-        summary=$(cat "$GITHUB_WORKSPACE/hrev-output.json" | jq -r '.summary')
-
-        # Format for PR comment
-        if [ "$passed" = "true" ]; then
-          emoji="✅"
-          status="PASSED"
-        else
-          emoji="❌"
-          status="FAILED"
-        fi
-
-        # Build comment body
-        comment_body="## $emoji Harness Reviewer
-
-$summary"
-
-        # Save to file for next step
-        echo "$comment_body" > "$GITHUB_WORKSPACE/hrev-comment.md"
-
+        passed=$(jq -r '.passed' "$GITHUB_WORKSPACE/hrev-output.json")
+        summary=$(jq -r '.summary' "$GITHUB_WORKSPACE/hrev-output.json")
         echo "passed=$passed" >> "$GITHUB_OUTPUT"
+        {
+          printf '## '
+          if [ "$passed" = "true" ]; then printf '✅'; else printf '❌'; fi
+          printf ' Harness Reviewer\n\n%s\n' "$summary"
+        } > "$GITHUB_WORKSPACE/hrev-comment.md"
 
     - name: Post PR comment
       if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}

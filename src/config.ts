@@ -24,8 +24,7 @@ export function loadConfig(configPath = "hrev.yml"): Config {
   }
 
   const content = readFileSync(configPath, "utf-8");
-  const parsed = parse(content);
-  const validated = configSchema.parse(parsed);
+  const validated = configSchema.parse(parse(content) as unknown);
 
   return validated;
 }

@@ -2,7 +2,7 @@ import { execSync } from "child_process";
 import { Diff, DiffFile } from "./types";
 
 export function getGitDiff(base?: string, head?: string): Diff {
-  const range = base && head ? `${base}...${head}` : "HEAD";
+  const range = base ? `${base}...${head || "HEAD"}` : "HEAD";
   const raw = execSync(`git diff ${range}`, { encoding: "utf-8" });
   return parseDiff(raw);
 }
