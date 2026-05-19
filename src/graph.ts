@@ -258,7 +258,7 @@ async function extractVerdict(
         new HumanMessage(content),
       ]);
 
-      if (result && typeof result.passed === "boolean") {
+      if (typeof result.passed === "boolean") {
         return {
           passed: result.passed,
           reasoning: result.reasoning || "No reasoning provided",
