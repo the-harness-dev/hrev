@@ -1,6 +1,8 @@
 import { StateGraph, Annotation } from "@langchain/langgraph";
+import { SystemMessage, HumanMessage } from "@langchain/core/messages";
+import { z } from "zod";
 import { Rule, ReviewResult, ReviewSummary, Diff, DiffFile } from "./types";
-import { callModel } from "./model";
+import { callModel, createChatModel } from "./model";
 import {
   createWorkspaceContext,
   readFile,
@@ -10,6 +12,11 @@ import {
   getWorkspaceToolsDescription,
 } from "./workspace";
 import { info, debug, error as logError } from "./logger";
+
+const ReviewVerdict = z.object({
+  passed: z.boolean(),
+  reasoning: z.string(),
+});
 
 // Workflow interface to avoid 'any' for LangGraph integration
 interface WorkflowGraph {
@@ -109,7 +116,6 @@ function executeToolCalls(ctx: ReturnType<typeof createWorkspaceContext>, conten
 function createRuleNode(rule: Rule, defaultModel?: string) {
   return async (state: typeof ReviewState.State): Promise<Partial<typeof ReviewState.State>> => {
     info("Evaluating rule", { ruleId: rule.id, severity: rule.severity, path: rule.path, hasDiffContent: !!state.diff.raw });
-    // Skip if path constraint not met
     if (rule.path && !diffContainsPath(state.diff.files, rule.path)) {
       debug("Skipping rule", { ruleId: rule.id, reason: "path constraint not met", expected: rule.path });
       return {
@@ -161,17 +167,14 @@ ${state.diff.raw}`;
 
     debug("Sending rule to model", { ruleId: rule.id, systemPromptLen: systemPrompt.length, userPromptLen: userPrompt.length, systemPrompt, userPrompt });
     try {
-      // First call - model may request tool usage
       let response = await callModel(systemPrompt, userPrompt, rule.model, defaultModel);
       let content = response.content.trim();
 
-      // Check for tool calls and execute them
       let toolResults = executeToolCalls(ctx, content);
       let iterations = 0;
       const maxIterations = 3;
 
       while (toolResults.length > 0 && iterations < maxIterations) {
-        // Build follow-up prompt with tool results
         const toolContext = toolResults.map((tr) =>
           `TOOL: ${tr.tool}\nRESULT:\n${tr.result}\n---`
         ).join("\n");
@@ -186,28 +189,19 @@ Now provide your final evaluation of the diff against the rule. Respond with JSO
         response = await callModel(systemPrompt, followUpPrompt, rule.model, defaultModel);
         content = response.content.trim();
 
-        // Check if more tool calls
         toolResults = executeToolCalls(ctx, content);
         iterations++;
       }
 
-      // Extract JSON from potential markdown code blocks
-      const jsonMatch = content.match(/```json\n?([\s\S]*?)```/) ||
-                         content.match(/```\n?([\s\S]*?)```/) ||
-                         [null, content];
-      
-      const jsonStr = jsonMatch[1].trim() || content;
-      const rawResult = JSON.parse(jsonStr) as { passed: unknown; reasoning: unknown };
-      const passed = Boolean(rawResult.passed);
-      const reasoning = typeof rawResult.reasoning === "string" ? rawResult.reasoning : "No reasoning provided";
+      const verdict = await extractVerdict(content, systemPrompt, userPrompt, rule.model, defaultModel);
 
-      info("Rule evaluated", { ruleId: rule.id, passed, reasoningLen: reasoning.length, reasoning });
+      info("Rule evaluated", { ruleId: rule.id, passed: verdict.passed, reasoningLen: verdict.reasoning.length, reasoning: verdict.reasoning });
 
       return {
         results: [{
           ruleId: rule.id,
-          passed,
-          reasoning,
+          passed: verdict.passed,
+          reasoning: verdict.reasoning,
           severity: rule.severity,
         }],
       };
@@ -223,6 +217,62 @@ Now provide your final evaluation of the diff against the rule. Respond with JSO
       };
     }
   };
+}
+
+async function extractVerdict(
+  content: string,
+  systemPrompt: string,
+  userPrompt: string,
+  model?: string,
+  defaultModel?: string
+): Promise<{ passed: boolean; reasoning: string }> {
+  if (!content.trim()) {
+    return {
+      passed: false,
+      reasoning: "Model returned an empty response — the evaluation could not be completed.",
+    };
+  }
+
+  try {
+    const jsonMatch = content.match(/```json\n?([\s\S]*?)```/) ||
+                       content.match(/```\n?([\s\S]*?)```/) ||
+                       [null, content];
+    
+    const jsonStr = jsonMatch[1].trim() || content;
+    const rawResult = JSON.parse(jsonStr) as { passed: unknown; reasoning: unknown };
+    return {
+      passed: Boolean(rawResult.passed),
+      reasoning: typeof rawResult.reasoning === "string" ? rawResult.reasoning : "No reasoning provided",
+    };
+  } catch {
+    debug("Falling back to structured output for verdict", { contentPreview: content.substring(0, 200) });
+
+    try {
+      const verdictModel = createChatModel(model, defaultModel).withStructuredOutput(ReviewVerdict, {
+        name: "review_verdict",
+        method: "functionCalling",
+      });
+
+      const result = await verdictModel.invoke([
+        new SystemMessage(`Rephrase the following content into a review verdict JSON with fields "passed" (boolean) and "reasoning" (string).`),
+        new HumanMessage(content),
+      ]);
+
+      if (result && typeof result.passed === "boolean") {
+        return {
+          passed: result.passed,
+          reasoning: result.reasoning || "No reasoning provided",
+        };
+      }
+    } catch {
+      // fall through to raw content extraction
+    }
+
+    return {
+      passed: false,
+      reasoning: `Model returned non-JSON response: ${content.substring(0, 500)}`,
+    };
+  }
 }
 
 function aggregatorNode(state: typeof ReviewState.State): Partial<typeof ReviewState.State> {

@@ -392,6 +392,8 @@ export async function spawnSubAgent(projectDir: string): Promise<RecommendedRule
   });
 
   workflow.addNode("codeAnalysisNode", async (state: typeof RecommendState.State) => {
+    info("Code analysis: entered", { areaCount: state.codeAreas.length });
+
     if (state.codeAreas.length === 0) {
       debug("Code analysis: no code areas to analyze");
       return { codePatterns: [] };
@@ -437,6 +439,8 @@ export async function spawnSubAgent(projectDir: string): Promise<RecommendedRule
   });
 
   workflow.addNode("matchNode", async (state: typeof RecommendState.State) => {
+    info("Match node: entered", { codePatterns: state.codePatterns.length, documentedPatterns: state.documentedPatterns.length });
+
     if (state.codePatterns.length === 0) {
       debug("Match node: no code patterns to match, returning all as unmatched");
       return { unmatchedPatterns: state.codePatterns };
@@ -462,6 +466,7 @@ export async function spawnSubAgent(projectDir: string): Promise<RecommendedRule
       const unmatched = parsed && typeof parsed === "object" && "unmatched" in parsed ? (parsed as Record<string, unknown>).unmatched as unknown[] : [];
 
       if (Array.isArray(unmatched)) {
+        debug("Match node: results", { unmatchedCount: unmatched.length, codePatterns: state.codePatterns.length, documentedPatterns: state.documentedPatterns.length });
         return { unmatchedPatterns: unmatched as CodePattern[] };
       }
 
