@@ -59,6 +59,7 @@ function executeToolCalls(ctx: ReturnType<typeof createWorkspaceContext>, conten
 
   while ((match = toolRegex.exec(content)) !== null) {
     const [, toolName, arg] = match;
+    debug("Executing tool", { tool: toolName, arg });
 
     try {
       switch (toolName) {
@@ -108,6 +109,10 @@ function executeToolCalls(ctx: ReturnType<typeof createWorkspaceContext>, conten
         result: `[Error: ${error instanceof Error ? error.message : String(error)}]`,
       });
     }
+  }
+
+  if (results.length > 0) {
+    info("Tool calls executed", { count: results.length, tools: results.map((r) => ({ tool: r.tool, resultLen: r.result.length })) });
   }
 
   return results;

@@ -7,21 +7,6 @@ export function getGitDiff(base?: string, head?: string): Diff {
   return parseDiff(raw);
 }
 
-const LOCKFILE_PATTERNS = [
-  /package-lock\.json$/,
-  /yarn\.lock$/,
-  /pnpm-lock\.yaml$/,
-  /Gemfile\.lock$/,
-  /Cargo\.lock$/,
-  /poetry\.lock$/,
-  /composer\.lock$/,
-  /\.terraform\.lock\.hcl$/,
-];
-
-function isLockfile(path: string): boolean {
-  return LOCKFILE_PATTERNS.some((p) => p.test(path));
-}
-
 export function parseDiff(raw: string): Diff {
   const files: DiffFile[] = [];
   const chunks = raw.split("diff --git ").slice(1);
@@ -34,12 +19,7 @@ export function parseDiff(raw: string): Diff {
     files.push({ path, content: chunk });
   }
   
-  const filteredFiles = files.filter((f) => !isLockfile(f.path));
-  const filteredRaw = filteredFiles.length === files.length
-    ? raw
-    : filteredFiles.map((f) => `diff --git ${f.content}`).join("");
-  
-  return { files: filteredFiles, raw: filteredRaw };
+  return { files, raw };
 }
 
 export function diffContainsPath(diff: Diff, pathPrefix: string): boolean {

@@ -55,7 +55,7 @@ export async function callModel(
 ): Promise<ModelResponse> {
   const chatModel = createChatModel(model, projectModel);
   const start = Date.now();
-  debug("callModel request", { model: resolveModel(model, projectModel), promptLen: userPrompt.length });
+  debug("callModel request", { model: resolveModel(model, projectModel), promptLen: userPrompt.length, systemPrompt, userPrompt });
 
   try {
     const response = await chatModel.invoke([
