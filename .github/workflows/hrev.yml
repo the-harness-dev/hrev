@@ -3,9 +3,6 @@ name: Code Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  push:
-    branches:
-      - main
 
 permissions:
   contents: write
@@ -41,8 +38,8 @@ jobs:
           status: true
 
   auto-merge:
-    if: ${{ github.event_name == 'pull_request' }}
     needs: [lint, review]
+    if: success()
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,8 +47,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Enable auto-merge
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Merge PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr merge ${{ github.event.pull_request.number }} --auto --squash
+          gh pr merge ${{ github.event.pull_request.number }} --squash --delete-branch
+
+      - name: Publish to npm
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          git checkout main
+          git pull origin main
+          npm publish --access public
