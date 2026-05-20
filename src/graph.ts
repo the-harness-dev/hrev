@@ -141,7 +141,9 @@ function createRuleNode(rule: Rule, defaultModel?: string, systemPromptOverride?
     const ctx = createWorkspaceContext(workspaceRoot);
     const toolsDescription = getWorkspaceToolsDescription();
 
-    const systemPrompt = systemPromptOverride ?? `You are reviewing a PROPOSED CHANGE (git diff) to an existing codebase. The rule
+    const systemPrompt = systemPromptOverride
+      ? `${systemPromptOverride}\n\n${toolsDescription}`
+      : `You are reviewing a PROPOSED CHANGE (git diff) to an existing codebase. The rule
 below describes a requirement the codebase must meet.
 
 Your job: determine whether APPLYING this diff would BREAK or INTRODUCE a
