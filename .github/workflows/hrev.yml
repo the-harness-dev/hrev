@@ -67,6 +67,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          git checkout main
-          git pull origin main
+          git checkout -b main
           npm publish --access public
