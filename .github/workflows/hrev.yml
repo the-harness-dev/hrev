@@ -47,19 +47,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org/
-
-      - run: npm ci
-
-      - run: npm run build
-
-      - name: Merge and publish
+      - name: Enable auto-merge
         env:
           GH_TOKEN: ${{ github.token }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          gh pr merge ${{ github.event.pull_request.number }} --squash --delete-branch
-          npm publish --access public
+          gh pr merge ${{ github.event.pull_request.number }} --auto --squash --delete-branch
