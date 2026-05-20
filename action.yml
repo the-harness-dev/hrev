@@ -6,9 +6,9 @@ branding:
 
 inputs:
   api-url:
-    description: 'Model API URL (default: GitHub Models)'
+    description: 'Model API URL (e.g., https://models.github.ai)'
     required: false
-    default: 'https://models.github.ai'
+    default: ''
   api-key:
     description: 'API key for model access (optional if exactly one common env var is set)'
     required: false
@@ -16,7 +16,7 @@ inputs:
   model:
     description: 'Model to use (e.g., openai/gpt-4.1)'
     required: false
-    default: 'openai/gpt-4.1'
+    default: ''
   config-file:
     description: 'Path to hrev.yml config'
     required: false
