@@ -2,11 +2,10 @@ name: Publish to npm
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * *'
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   publish:
@@ -23,6 +22,4 @@ jobs:
 
       - run: npm run build
 
-      - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --provenance --access public
