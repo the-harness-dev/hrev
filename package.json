@@ -3,6 +3,10 @@
   "version": "0.1.2",
   "description": "AI-powered rules-based code review CLI using LangGraph",
   "main": "dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/the-harness-dev/hrev"
+  },
   "bin": {
     "hrev": "dist/cli.js"
   },
