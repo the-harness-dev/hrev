@@ -2,6 +2,7 @@ import { StateGraph, Annotation } from "@langchain/langgraph";
 import { SystemMessage, HumanMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import { Rule, ReviewResult, ReviewSummary, Diff, DiffFile } from "./types";
+import { getDetectors, detectorToRule, getDetectorSystemPrompt } from "./detectors/index";
 import { callModel, createChatModel } from "./model";
 import {
   createWorkspaceContext,
@@ -43,7 +44,10 @@ const ReviewState = Annotation.Root({
 });
 
 function diffContainsPath(files: DiffFile[], pathPrefix: string): boolean {
-  return files.some((f) => f.path.startsWith(pathPrefix));
+  const pathPrefixes = pathPrefix.split(",").map((p) => p.trim());
+  return files.some((f) =>
+    pathPrefixes.some((prefix) => f.path.startsWith(prefix))
+  );
 }
 
 /**
@@ -118,9 +122,9 @@ function executeToolCalls(ctx: ReturnType<typeof createWorkspaceContext>, conten
   return results;
 }
 
-function createRuleNode(rule: Rule, defaultModel?: string) {
+function createRuleNode(rule: Rule, defaultModel?: string, systemPromptOverride?: string) {
   return async (state: typeof ReviewState.State): Promise<Partial<typeof ReviewState.State>> => {
-    info("Evaluating rule", { ruleId: rule.id, severity: rule.severity, path: rule.path, hasDiffContent: !!state.diff.raw });
+    info("Evaluating rule", { ruleId: rule.id, severity: rule.severity, path: rule.path, hasDiffContent: !!state.diff.raw, isDetector: !!systemPromptOverride });
     if (rule.path && !diffContainsPath(state.diff.files, rule.path)) {
       debug("Skipping rule", { ruleId: rule.id, reason: "path constraint not met", expected: rule.path });
       return {
@@ -137,7 +141,7 @@ function createRuleNode(rule: Rule, defaultModel?: string) {
     const ctx = createWorkspaceContext(workspaceRoot);
     const toolsDescription = getWorkspaceToolsDescription();
 
-    const systemPrompt = `You are reviewing a PROPOSED CHANGE (git diff) to an existing codebase. The rule
+    const systemPrompt = systemPromptOverride ?? `You are reviewing a PROPOSED CHANGE (git diff) to an existing codebase. The rule
 below describes a requirement the codebase must meet.
 
 Your job: determine whether APPLYING this diff would BREAK or INTRODUCE a
@@ -325,28 +329,60 @@ function aggregatorNode(state: typeof ReviewState.State): Partial<typeof ReviewS
   };
 }
 
+export interface ReviewOptions {
+  enableDetectors?: boolean;
+  enableUserRules?: boolean;
+}
+
 export async function runReview(
   diff: Diff,
   rules: Rule[],
   defaultModel?: string,
-  workspaceRoot?: string
+  workspaceRoot?: string,
+  options?: ReviewOptions
 ): Promise<ReviewSummary> {
   if (!diff.raw || diff.raw.trim().length === 0) {
     throw new Error("Diff is empty — nothing to review. Make sure your git diff contains changes, or check that your base/head refs are correct.");
   }
 
+  const enableDetectors = options?.enableDetectors !== false; // default true
+  const enableUserRules = options?.enableUserRules !== false; // default true
+
+  const allRules: Rule[] = [];
+
+  if (enableDetectors) {
+    const detectors = getDetectors();
+    for (const detector of detectors) {
+      allRules.push(detectorToRule(detector));
+    }
+  }
+
+  if (enableUserRules) {
+    allRules.push(...rules);
+  }
+
+  if (allRules.length === 0) {
+    throw new Error("No rules or detectors to evaluate.");
+  }
+
   const workflow = new StateGraph(ReviewState) as unknown as WorkflowGraph;
 
-  // Add parallel rule nodes
-  for (const rule of rules) {
-    workflow.addNode(`rule_${rule.id}`, createRuleNode(rule, defaultModel));
+  const detectorIds = new Set(getDetectors().map((d) => d.id));
+
+  // Add parallel rule/detector nodes
+  for (const rule of allRules) {
+    const isDetector = detectorIds.has(rule.id);
+    const systemPrompt = isDetector
+      ? getDetectorSystemPrompt(getDetectors().find((d) => d.id === rule.id)!)
+      : undefined;
+    workflow.addNode(`rule_${rule.id}`, createRuleNode(rule, defaultModel, systemPrompt));
   }
 
   // Add aggregator node
   workflow.addNode("aggregator", aggregatorNode);
 
   // Fan out from start to all rule nodes in parallel
-  const ruleNodeIds = rules.map((r) => `rule_${r.id}`);
+  const ruleNodeIds = allRules.map((r) => `rule_${r.id}`);
   workflow.addConditionalEdges("__start__", () => ruleNodeIds);
 
   // All rule nodes converge to aggregator
@@ -362,7 +398,7 @@ export async function runReview(
   // Run the graph
   const result = await graph.invoke({
     diff,
-    rules,
+    rules: allRules,
     defaultModel,
     workspaceRoot,
     results: [],

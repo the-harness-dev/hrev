@@ -8,6 +8,14 @@ export interface Rule {
   model?: string; // optional per-rule model override
 }
 
+export interface Detector {
+  id: string;
+  description: string;
+  severity: Severity;
+  path?: string; // optional path constraint
+  systemPrompt: string;
+}
+
 export interface Config {
   model?: string; // optional project-level default model
   rules: Rule[];

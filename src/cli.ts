@@ -9,6 +9,7 @@ import { readFileSync } from "fs";
 import { loadConfig } from "./config";
 import { getGitDiff, parseDiff } from "./diff";
 import { runReview } from "./graph";
+import { isDetectorRuleId } from "./detectors/index";
 import { getLogPath, info } from "./logger";
 
 interface ReviewOptions {
@@ -19,6 +20,8 @@ interface ReviewOptions {
   verbose?: boolean;
   json?: boolean;
   debug?: boolean;
+  detectors?: boolean;
+  detectorsOnly?: boolean;
 }
 
 const program = new Command();
@@ -50,6 +53,8 @@ program
   .option("-v, --verbose", "Show per-rule evaluation details")
   .option("--json", "Output results as JSON for programmatic use")
   .option("--debug", "Enable debug logging to /tmp/hrev-logs/")
+  .option("--no-detectors", "Skip built-in detectors, only run user rules")
+  .option("--detectors-only", "Only run built-in detectors, skip user rules")
   .action(async (options: ReviewOptions) => {
     if (options.debug) {
       console.log(`Debug log: ${getLogPath()}`);
@@ -65,8 +70,13 @@ program
       } else {
         diff = getGitDiff(options.base, options.head);
       }
+
+      const reviewOptions = {
+        enableDetectors: options.detectors !== false,
+        enableUserRules: !options.detectorsOnly,
+      };
       
-      const summary = await runReview(diff, config.rules, config.model, process.cwd());
+      const summary = await runReview(diff, config.rules, config.model, process.cwd(), reviewOptions);
       
       if (options.json) {
         const output = {
@@ -81,7 +91,8 @@ program
           for (const r of summary.results) {
             const icon = r.passed ? "✅" : "❌";
             const sev = `[${r.severity.toUpperCase()}]`;
-            console.log(`  ${icon} ${sev} ${r.ruleId}`);
+            const detectorPrefix = isDetectorRuleId(r.ruleId) ? "[DETECTOR] " : "";
+            console.log(`  ${icon} ${sev} ${detectorPrefix}${r.ruleId}`);
             console.log(`     → ${r.reasoning}`);
           }
           console.log("");
