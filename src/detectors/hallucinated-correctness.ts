@@ -51,6 +51,7 @@ Evaluation rules:
 - If any pattern appears → FAIL with specific reasoning identifying the pattern, the potential failure scenario, and the concrete input that would trigger it
 - The code may compile and look clean — the issue is behavioral correctness, not syntax
 - Focus on actual risk: be specific about what would go wrong and under what conditions
+- If the diff references external modules, config files, or functions not fully defined in the diff itself, use tools to read those files before making a judgment. Never say "need to examine" — use TOOL: readFile() or TOOL: searchFiles() to look.
 
 Your final response MUST include a JSON object: {"passed": boolean, "reasoning": "detailed explanation"}`,
 };

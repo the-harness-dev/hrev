@@ -142,10 +142,13 @@ TOOL: readFile("src/main.go")
 
 Then I'll return the file contents and you can continue analyzing.
 
-Use these tools sparingly — only when the diff alone doesn't provide enough context to evaluate the rule. Good reasons to explore:
-- The diff calls a function you don't see defined in the diff
-- The rule references a pattern or convention that might be in other files
-- You need to verify if a changed function is used elsewhere
-- You want to check if there's an existing test for the changed code
+You may use these tools whenever the diff alone does not provide enough context. For example:
+- The diff calls a function you don't see defined in the diff → use readFile() or searchFiles()
+- The rule references a pattern or convention that might be in other files → use searchFiles()
+- You need to verify if a changed function is used elsewhere → use searchFiles()
+- You want to check if there's an existing test for the changed code → use globFiles()
+- You need to read a config or model file referenced by the diff → use readFile()
+
+Do NOT guess or defer when you could look something up with a tool.
 `;
 }

@@ -194,7 +194,11 @@ ${state.diff.raw}`;
 
 ${toolContext}
 
-Now provide your final evaluation of the diff against the rule. Respond with JSON:
+Now provide your final evaluation of the diff against the rule. The diff you are reviewing is:
+
+${state.diff.raw}
+
+Respond with JSON:
 {"passed": boolean, "reasoning": "..."}`;
 
         response = await callModel(systemPrompt, followUpPrompt, rule.model, defaultModel);
