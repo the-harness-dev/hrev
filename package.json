@@ -1,6 +1,6 @@
 {
   "name": "@the-harness-dev/hrev",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "AI-powered rules-based code review CLI using LangGraph",
   "main": "dist/index.js",
   "repository": {

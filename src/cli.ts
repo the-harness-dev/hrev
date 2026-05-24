@@ -45,7 +45,7 @@ program
 program
   .name("hrev")
   .description("AI-powered rules-based code review")
-  .version("0.1.0")
+  .version("0.1.3")
   .option("-c, --config <path>", "Path to config file", "hrev.yml")
   .option("--base <branch>", "Base branch for comparison")
   .option("--head <branch>", "Head branch for comparison")
