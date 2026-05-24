@@ -185,6 +185,25 @@ ${state.diff.raw}`;
       let iterations = 0;
       const maxIterations = 3;
 
+      // Detect when model wants to explore but wrote prose instead of TOOL: syntax
+      const explorationPattern = /\b(I['\u2019]ll search|I['\u2019]ll examine|I need to (examine|search|check|read|verify|look)|let me (read|check|search)|TOOL)/i;
+      const hasVerdictJson = content.includes('"passed"') || content.includes('{');
+      if (toolResults.length === 0 && explorationPattern.test(content) && (!hasVerdictJson || content.indexOf('"passed"') > 100)) {
+        const redirectPrompt = `Use the TOOL: command syntax to explore. For example:
+TOOL: searchFiles("functionName")
+TOOL: readFile("src/config.ts")
+
+Do NOT write "I'll search" or "Let me check" — issue the actual TOOL: command.
+The diff you are reviewing is:
+
+${state.diff.raw}
+
+After exploring, provide your final verdict as JSON.`;
+        response = await callModel(systemPrompt, redirectPrompt, rule.model, defaultModel);
+        content = response.content.trim();
+        toolResults = executeToolCalls(ctx, content);
+      }
+
       while (toolResults.length > 0 && iterations < maxIterations) {
         const toolContext = toolResults.map((tr) =>
           `TOOL: ${tr.tool}\nRESULT:\n${tr.result}\n---`
