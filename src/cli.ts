@@ -7,6 +7,7 @@ import { runInit } from "./init";
 import { Command } from "commander";
 import { readFileSync } from "fs";
 import { loadConfig } from "./config";
+import { version } from "../package.json";
 import { getGitDiff, parseDiff } from "./diff";
 import { runReview } from "./graph";
 import { isDetectorRuleId } from "./detectors/index";
@@ -45,7 +46,7 @@ program
 program
   .name("hrev")
   .description("AI-powered rules-based code review")
-  .version("0.1.3")
+  .version(version)
   .option("-c, --config <path>", "Path to config file", "hrev.yml")
   .option("--base <branch>", "Base branch for comparison")
   .option("--head <branch>", "Head branch for comparison")
