@@ -187,13 +187,19 @@ ${state.diff.raw}`;
 
       // Detect when model wants to explore but wrote prose instead of TOOL: syntax
       const explorationPattern = /\b(I['\u2019]ll search|I['\u2019]ll examine|I need to (examine|search|check|read|verify|look)|let me (read|check|search)|TOOL)/i;
+      const deferralPattern = /\b(need to (verify|examine|search|check|read|investigate|look|confirm)|pending verification|cannot (determine|assess|evaluate) without|insufficient (context|information))/i;
       const hasVerdictJson = content.includes('"passed"') || content.includes('{');
-      if (toolResults.length === 0 && explorationPattern.test(content) && (!hasVerdictJson || content.indexOf('"passed"') > 100)) {
-        const redirectPrompt = `Use the TOOL: command syntax to explore. For example:
+      if (toolResults.length === 0 && (
+        (explorationPattern.test(content) && (!hasVerdictJson || content.indexOf('"passed"') > 100)) ||
+        (hasVerdictJson && deferralPattern.test(content))
+      )) {
+        const redirectPrompt = `Use the TOOL: command syntax to explore before giving your verdict. For example:
 TOOL: searchFiles("functionName")
 TOOL: readFile("src/config.ts")
 
-Do NOT write "I'll search" or "Let me check" — issue the actual TOOL: command.
+Issue the TOOL: command FIRST, then provide your final verdict as JSON.
+Do NOT return a verdict that says "Need to verify" or "Cannot determine" —
+use tools to actually verify, then give your final answer.
 The diff you are reviewing is:
 
 ${state.diff.raw}
