@@ -1,13 +1,21 @@
 import { ChatOpenAI } from "@langchain/openai";
 import { SystemMessage, HumanMessage } from "@langchain/core/messages";
+import { setMaxListeners } from "events";
 import { debug, info, error as logError } from "./logger";
+
+// Each ChatOpenAI invoke() registers an AbortSignal listener per HTTP request
+// (including retries). With 6 parallel nodes * ~3 requests each (attempts + retries
+// + tool iterations), we exceed the default 10. 50 provides comfortable headroom.
+setMaxListeners(50);
 
 interface ModelResponse {
   content: string;
 }
 
-const MAX_CONCURRENT_CALLS = 3;
+const MAX_CONCURRENT_CALLS = 1;
 const TIMEOUT = 300_000;
+
+const modelCache = new Map<string, ChatOpenAI>();
 
 function resolveModel(model?: string, projectModel?: string): string {
   const resolved = model || projectModel || process.env.HREV_MODEL;
@@ -31,20 +39,22 @@ function getApiConfig() {
 }
 
 export function createChatModel(modelName?: string, projectModel?: string): ChatOpenAI {
-  const { apiUrl, apiKey } = getApiConfig();
   const resolvedModel = resolveModel(modelName, projectModel);
-
-  return new ChatOpenAI({
-    modelName: resolvedModel,
-    temperature: 0.1,
-    timeout: TIMEOUT,
-    maxRetries: 2,
-    maxConcurrency: MAX_CONCURRENT_CALLS,
-    configuration: {
-      baseURL: apiUrl || undefined,
-      apiKey,
-    },
-  });
+  if (!modelCache.has(resolvedModel)) {
+    const { apiUrl, apiKey } = getApiConfig();
+    modelCache.set(resolvedModel, new ChatOpenAI({
+      modelName: resolvedModel,
+      temperature: 0.1,
+      timeout: TIMEOUT,
+      maxRetries: 2,
+      maxConcurrency: MAX_CONCURRENT_CALLS,
+      configuration: {
+        baseURL: apiUrl || undefined,
+        apiKey,
+      },
+    }));
+  }
+  return modelCache.get(resolvedModel)!;
 }
 
 export async function callModel(
