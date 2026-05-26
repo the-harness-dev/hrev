@@ -19,6 +19,10 @@ export function getDetectors(): Detector[] {
   return ALL_DETECTORS;
 }
 
+export function getDetectorByRuleId(id: string): Detector | undefined {
+  return ALL_DETECTORS.find((d) => d.id === id);
+}
+
 export function isDetectorRuleId(id: string): boolean {
   return DETECTOR_IDS.has(id);
 }
