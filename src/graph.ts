@@ -2,7 +2,7 @@ import { StateGraph, Annotation } from "@langchain/langgraph";
 import { SystemMessage, HumanMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import { Rule, ReviewResult, ReviewSummary, Diff, DiffFile } from "./types";
-import { getDetectors, detectorToRule, getDetectorSystemPrompt } from "./detectors/index";
+import { getDetectors, detectorToRule, isDetectorRuleId, getDetectorByRuleId } from "./detectors/index";
 import { callModel, createChatModel } from "./model";
 import {
   createWorkspaceContext,
@@ -12,7 +12,7 @@ import {
   searchFiles,
   getWorkspaceToolsDescription,
 } from "./workspace";
-import { info, debug, error as logError } from "./logger";
+import { info, debug, warn, error as logError } from "./logger";
 
 const ReviewVerdict = z.object({
   passed: z.boolean(),
@@ -181,6 +181,8 @@ ${state.diff.raw}`;
       let response = await callModel(systemPrompt, userPrompt, rule.model, defaultModel);
       let content = response.content.trim();
 
+      debug("callModel returned", { ruleId: rule.id, contentLen: content.length, contentEmpty: content.length === 0 });
+
       let toolResults = executeToolCalls(ctx, content);
       let iterations = 0;
       const maxIterations = 3;
@@ -193,21 +195,19 @@ ${state.diff.raw}`;
         (explorationPattern.test(content) && (!hasVerdictJson || content.indexOf('"passed"') > 100)) ||
         (hasVerdictJson && deferralPattern.test(content))
       )) {
-        const redirectPrompt = `Use the TOOL: command syntax to explore before giving your verdict. For example:
+        debug("Redirecting exploration prose to TOOL: syntax", { ruleId: rule.id, contentPreview: content.substring(0, 200), hasVerdict: hasVerdictJson });
+        const redirectPrompt = `Use TOOL: command syntax to explore before giving your verdict. For example:
 TOOL: searchFiles("functionName")
 TOOL: readFile("src/config.ts")
 
-Issue the TOOL: command FIRST, then provide your final verdict as JSON.
-Do NOT return a verdict that says "Need to verify" or "Cannot determine" —
-use tools to actually verify, then give your final answer.
+Do NOT return a verdict that says "Need to verify" — use tools to verify instead.
 The diff you are reviewing is:
 
-${state.diff.raw}
-
-After exploring, provide your final verdict as JSON.`;
+${state.diff.raw}`;
         response = await callModel(systemPrompt, redirectPrompt, rule.model, defaultModel);
         content = response.content.trim();
         toolResults = executeToolCalls(ctx, content);
+        debug("Redirect result", { ruleId: rule.id, newContentLen: content.length, toolResultsCount: toolResults.length });
       }
 
       while (toolResults.length > 0 && iterations < maxIterations) {
@@ -230,6 +230,18 @@ Respond with JSON:
         content = response.content.trim();
 
         toolResults = executeToolCalls(ctx, content);
+
+        // Re-detect deferral prose inside loop — model saw tool results but still defers
+        if (toolResults.length === 0 && deferralPattern.test(content) && iterations + 1 < maxIterations) {
+          const retryPrompt = `You received tool results but wrote deferral text instead of using TOOL: syntax or giving a verdict. Use TOOL: commands to explore further, or provide your final JSON verdict now.
+The diff you are reviewing is:
+
+${state.diff.raw}`;
+          response = await callModel(systemPrompt, retryPrompt, rule.model, defaultModel);
+          content = response.content.trim();
+          toolResults = executeToolCalls(ctx, content);
+        }
+
         iterations++;
       }
 
@@ -284,8 +296,8 @@ async function extractVerdict(
       passed: Boolean(rawResult.passed),
       reasoning: typeof rawResult.reasoning === "string" ? rawResult.reasoning : "No reasoning provided",
     };
-  } catch {
-    debug("Falling back to structured output for verdict", { contentPreview: content.substring(0, 200) });
+  } catch (parseErr) {
+    debug("Failed to parse verdict JSON, falling back to structured output", { contentPreview: content.substring(0, 200), parseErr: String(parseErr) });
 
     try {
       const verdictModel = createChatModel(model, defaultModel).withStructuredOutput(ReviewVerdict, {
@@ -306,8 +318,10 @@ async function extractVerdict(
       }
     } catch {
       // fall through to raw content extraction
+      debug("Structured output fallback failed", { contentPreview: content.substring(0, 200) });
     }
 
+    warn("Unparseable verdict content", { contentPreview: content.substring(0, 500), contentLen: content.length });
     return {
       passed: false,
       reasoning: `Model returned non-JSON response: ${content.substring(0, 500)}`,
@@ -363,6 +377,7 @@ function aggregatorNode(state: typeof ReviewState.State): Partial<typeof ReviewS
 export interface ReviewOptions {
   enableDetectors?: boolean;
   enableUserRules?: boolean;
+  filterRuleId?: string;
 }
 
 export async function runReview(
@@ -376,8 +391,8 @@ export async function runReview(
     throw new Error("Diff is empty — nothing to review. Make sure your git diff contains changes, or check that your base/head refs are correct.");
   }
 
-  const enableDetectors = options?.enableDetectors !== false; // default true
-  const enableUserRules = options?.enableUserRules !== false; // default true
+  const enableDetectors = options?.enableDetectors !== false;
+  const enableUserRules = options?.enableUserRules !== false;
 
   const allRules: Rule[] = [];
 
@@ -396,49 +411,92 @@ export async function runReview(
     throw new Error("No rules or detectors to evaluate.");
   }
 
-  const workflow = new StateGraph(ReviewState) as unknown as WorkflowGraph;
+  const filterRuleId = options?.filterRuleId;
+  const filteredRules = filterRuleId
+    ? allRules.filter((r) => r.id === filterRuleId || r.id.endsWith("/" + filterRuleId))
+    : allRules;
 
-  const detectorIds = new Set(getDetectors().map((d) => d.id));
-
-  // Add parallel rule/detector nodes
-  for (const rule of allRules) {
-    const isDetector = detectorIds.has(rule.id);
-    const systemPrompt = isDetector
-      ? getDetectorSystemPrompt(getDetectors().find((d) => d.id === rule.id)!)
-      : undefined;
-    workflow.addNode(`rule_${rule.id}`, createRuleNode(rule, defaultModel, systemPrompt));
+  if (filteredRules.length === 0) {
+    throw new Error(`No rules found matching ID "${filterRuleId}"`);
   }
 
-  // Add aggregator node
-  workflow.addNode("aggregator", aggregatorNode);
+  // Batch execution to avoid MaxListenersExceededWarning from parallel AbortControllers
+  const BATCH_SIZE = 8;
+  const allResults: ReviewResult[] = [];
 
-  // Fan out from start to all rule nodes in parallel
-  const ruleNodeIds = allRules.map((r) => `rule_${r.id}`);
-  workflow.addConditionalEdges("__start__", () => ruleNodeIds);
+  for (let i = 0; i < filteredRules.length; i += BATCH_SIZE) {
+    const batch = filteredRules.slice(i, i + BATCH_SIZE);
 
-  // All rule nodes converge to aggregator
-  for (const nodeId of ruleNodeIds) {
-    workflow.addEdge(nodeId, "aggregator");
+    const workflow = new StateGraph(ReviewState) as unknown as WorkflowGraph;
+
+    for (const rule of batch) {
+      const isDetector = isDetectorRuleId(rule.id);
+      const detector = isDetector ? getDetectorByRuleId(rule.id) : undefined;
+      const systemPrompt = detector?.systemPrompt;
+      workflow.addNode(`rule_${rule.id}`, createRuleNode(rule, defaultModel, systemPrompt));
+    }
+
+    const batchNodeIds = batch.map((r) => `rule_${r.id}`);
+    workflow.addConditionalEdges("__start__", () => batchNodeIds);
+
+    for (const nodeId of batchNodeIds) {
+      workflow.addEdge(nodeId, "__end__");
+    }
+
+    const graph = workflow.compile();
+
+    const batchIndex = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(allRules.length / BATCH_SIZE);
+    info("Running review batch", { batch: `${batchIndex}/${totalBatches}`, batchSize: batch.length });
+
+    const result = await graph.invoke({
+      diff,
+      rules: batch,
+      defaultModel,
+      workspaceRoot,
+      results: [],
+      summary: undefined,
+    });
+
+    allResults.push(...result.results);
   }
 
-  // Aggregator ends the flow
-  workflow.addEdge("aggregator", "__end__");
+  const failedBlockers = allResults.filter((r) => !r.passed && r.severity === "blocker");
+  const failedGeneral = allResults.filter((r) => !r.passed && r.severity === "general");
+  const failedNits = allResults.filter((r) => !r.passed && r.severity === "nit");
 
-  const graph = workflow.compile();
+  const passed = failedBlockers.length === 0;
+  info("Review batches complete", { totalResults: allResults.length, passed, blockerFails: failedBlockers.length, generalFails: failedGeneral.length, nitFails: failedNits.length });
 
-  // Run the graph
-  const result = await graph.invoke({
-    diff,
-    rules: allRules,
-    defaultModel,
-    workspaceRoot,
-    results: [],
-    summary: undefined,
-  });
+  const summaryLines: string[] = [
+    "═".repeat(60),
+    "  AI Code Review Results",
+    "═".repeat(60),
+    "",
+    `${String(allResults.length)} rules evaluated`,
+    `  ❌ Blockers failed: ${String(failedBlockers.length)}`,
+    `  ⚠️  General failed: ${String(failedGeneral.length)}`,
+    `  💡 Nits: ${String(failedNits.length)}`,
+    "",
+    `Overall: ${passed ? "✅ PASSED" : "❌ FAILED"}`,
+    "",
+  ];
 
-  if (!result.summary) {
-    throw new Error("Review did not produce a summary");
+  const failedRules = allResults.filter((r) => !r.passed);
+  if (failedRules.length > 0) {
+    summaryLines.push("Failed Rules:");
+    for (const r of failedRules) {
+      const icon = r.severity === "blocker" ? "❌" : r.severity === "general" ? "⚠️" : "💡";
+      summaryLines.push(`  ${icon} [${r.severity.toUpperCase()}] ${r.ruleId}`);
+      summaryLines.push(`     ${r.reasoning}`);
+    }
   }
 
-  return result.summary;
+  summaryLines.push("", "═".repeat(60));
+
+  return {
+    passed,
+    results: allResults,
+    summary: summaryLines.join("\n"),
+  };
 }

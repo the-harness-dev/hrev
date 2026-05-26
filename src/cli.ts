@@ -23,6 +23,7 @@ interface ReviewOptions {
   debug?: boolean;
   detectors?: boolean;
   detectorsOnly?: boolean;
+  rule?: string;
 }
 
 const program = new Command();
@@ -56,6 +57,7 @@ program
   .option("--debug", "Enable debug logging to /tmp/hrev-logs/")
   .option("--no-detectors", "Skip built-in detectors, only run user rules")
   .option("--detectors-only", "Only run built-in detectors, skip user rules")
+  .option("--rule <id>", "Run only the specified rule or detector by ID")
   .action(async (options: ReviewOptions) => {
     if (options.debug) {
       console.log(`Debug log: ${getLogPath()}`);
@@ -75,6 +77,7 @@ program
       const reviewOptions = {
         enableDetectors: options.detectors !== false,
         enableUserRules: !options.detectorsOnly,
+        filterRuleId: options.rule,
       };
       
       const summary = await runReview(diff, config.rules, config.model, process.cwd(), reviewOptions);

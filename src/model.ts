@@ -1,7 +1,7 @@
 import { ChatOpenAI } from "@langchain/openai";
 import { SystemMessage, HumanMessage } from "@langchain/core/messages";
 import { setMaxListeners } from "events";
-import { debug, info, error as logError } from "./logger";
+import { debug, info, warn, error as logError } from "./logger";
 
 // Each ChatOpenAI invoke() registers an AbortSignal listener per HTTP request
 // (including retries). With 6 parallel nodes * ~3 requests each (attempts + retries
@@ -80,11 +80,18 @@ export async function callModel(
       contentLen: content.length,
       content,
     });
+    if (content.length === 0) {
+      warn("callModel returned empty content", { elapsed, model: resolveModel(model, projectModel), promptLen: userPrompt.length });
+    }
 
     return { content };
   } catch (err) {
     const elapsed = Date.now() - start;
-    logError("callModel failed", { elapsed, err: String(err) });
+    const errMsg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    logError("callModel failed", { elapsed, err: errMsg, model: resolveModel(model, projectModel), promptLen: userPrompt.length });
+    if (err instanceof Error && err.stack) {
+      debug("callModel error stack", { stack: err.stack });
+    }
     throw err;
   }
 }
