@@ -1,30 +1,29 @@
 # Harness Reviewer (`hrev`)
 
-A command-line tool that uses AI models to perform rules-based code reviews on git diffs. Part of the harness.dev ecosystem.
+A command-line tool that uses AI models to perform **semantic guard** reviews on git diffs.
 
-## What Makes This Different
+**Semantic guards** are plain-English constraints about architectural and behavioral intent. Unlike tests or linters, they evaluate whether a code change respects the *design rationale* of your system.
 
-`hrev` evaluates **semantic rules** — things a linter or static analyzer *cannot* catch:
+This document explains the concept and how `hrev` implements it. Whether you use `hrev` or build your own guard pipeline, the same principles apply.
 
-- Architectural compliance ("always use source documents before aggregates")
-- Cross-cutting concerns ("every financial transaction must balance")
-- Business logic integrity ("don't silently ignore errors")
-- Design patterns ("new features must be MCP tools first, UI second")
+---
 
-Each rule is written in plain English. An AI model reads the diff and the rule, then reasons about whether the code violates the intent.
+## The Problem
 
-## How It Works
+AI-assisted coding (Copilot, Cursor, Devin, etc.) expands the solution domain of your codebase. These tools generate code that compiles, passes tests, and looks idiomatic — but can silently violate your architecture because they were never trained on your design intent.
 
-1. Define review rules in a `hrev.yml` config file in your repo
-2. Each rule is evaluated in parallel by a LangGraph node
-3. An aggregator node determines pass/fail based on severity
-4. Returns exit code 1 if any blocker fails
+Without explicit constraints, every AI-assisted PR is a drift risk.
 
-## Rule Severity Levels
+**Examples of architectural drift that tests won't catch:**
 
-- `nit` — Minor suggestions, non-blocking
-- `general` — Standard recommendations
-- `blocker` — Must fix, fails the review
+- A new endpoint bypasses the audit log because the developer (or AI) didn't know it existed.
+- A utility function duplicates existing logic because the AI didn't search the codebase.
+- A circuit breaker is removed because the diff looked clean but the rationale was lost.
+- A feature is built as a web UI first because the AI defaulted to what it sees in training data, not your "MCP tool first" policy.
+
+Tests verify correctness. Linters enforce style and structure. Neither captures *intent*.
+
+---
 
 ## Installation
 
@@ -32,13 +31,15 @@ Each rule is written in plain English. An AI model reads the diff and the rule, 
 npm install -g @the-harness-dev/hrev
 ```
 
+Requires Node ≥ 20.
+
+---
+
 ## Configuration
 
-Create `hrev.yml` in your repo root. You **must** specify a model — there is no default.
+Create `hrev.yml` in your repo root.
 
 ```yaml
-# Project-level model (required unless every rule specifies its own)
-# Use any model name your provider supports: gpt-4o, claude-3-5-sonnet, llama3.1, etc.
 model: gpt-4o
 
 rules:
@@ -51,8 +52,6 @@ rules:
     description: "New operations must be accessible via MCP server. Design as MCP tool first, web UI second."
     severity: general
     path: "src/"
-    # Override project model for this rule
-    model: gpt-4o-mini
 ```
 
 **Model resolution (in order):**
@@ -63,6 +62,8 @@ rules:
 
 Works with any OpenAI-compatible endpoint: OpenAI, Anthropic (via proxy), Ollama, Groq, etc.
 
+---
+
 ## Environment Variables
 
 ```bash
@@ -70,18 +71,7 @@ HREV_API_URL=https://api.openai.com/v1
 HREV_API_KEY=sk-...
 ```
 
-Supports any OpenAI-compatible endpoint (OpenAI, local Ollama, etc).
-
-## Why Not a Linter?
-
-| What you want | Can a linter do it? | Can `hrev` do it? |
-|---|---|---|
-| "No trailing whitespace" | ✅ Yes | Overkill |
-| "Functions under 50 lines" | ✅ Yes | Overkill |
-| "Always create source documents before aggregate inserts" | ❌ No | ✅ Yes |
-| "Debits must equal credits before persisting" | ❌ No | ✅ Yes |
-| "MCP tool first, UI second" | ❌ No | ✅ Yes |
-| "Don't silently ignore exceptions" | ❌ No | ✅ Yes |
+---
 
 ## Usage
 
@@ -105,9 +95,11 @@ hrev --verbose
 hrev --json
 ```
 
+---
+
 ## GitHub Actions
 
-Add code review to any existing workflow in **one line**. No contributor setup needed — the maintainer manages the API key.
+Add code review to any existing workflow in **one line**.
 
 ### Quick Start
 
@@ -185,6 +177,159 @@ Supported auto-detected variables: `HREV_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_
 | `comment` | `true` | Post review summary as PR comment |
 | `status` | `true` | Set commit status check (pass/fail) |
 
+---
+
+## The Three-Layer Constraint Stack
+
+A codebase is protected by three layers of guards. `hrev` is the third. You need all three.
+
+### Layer 1: Deterministic Guards
+
+Unit tests, type checkers, linters, and static analysis. They verify what happens in a controlled, repeatable way.
+
+- **Precision:** Exact — a test either passes or fails.
+- **Scope:** One function, one module, one assertion.
+- **Cost:** Near-zero (CPU time).
+- **Limitation:** Cannot assert intent, design rationale, or cross-file architectural patterns.
+
+**Always use these first.** Before you define a semantic guard, ask: "Can a unit test assert this?" If yes, write the test. If no, proceed.
+
+**Examples of deterministic guards:**
+- Import restrictions (`no-restricted-imports` in ESLint)
+- Return types and type safety (TypeScript, mypy)
+- Priority chains (unit test the function, not the intent)
+- Branch coverage and conditional logic
+- Path-constraint matching (`startsWith` checks)
+
+### Layer 2: Structural Guards
+
+Module boundaries, package rules, dependency injection, and directory conventions. They enforce what can depend on what, and where code can live.
+
+- **Precision:** Exact — a module either imports from the right layer or it doesn't.
+- **Scope:** One edge in the dependency graph.
+- **Cost:** Near-zero (build time).
+- **Limitation:** Cannot assert *why* a dependency exists, only *that* it does.
+
+**Examples of structural guards:**
+- Package-level import restrictions (e.g., `src/domain/` cannot import from `src/ui/`)
+- Cyclic dependency detection
+- Directory-based conventions (feature folders, Clean Architecture layers)
+- API contract validation (OpenAPI, Protocol Buffers)
+
+### Layer 3: Semantic Guards
+
+Plain-English rules that constrain *intent*. They evaluate whether a code change respects the design rationale that exists in the heads of your senior engineers but in no compiler, linter, or type system.
+
+- **Precision:** Probabilistic — an LLM reads the diff and the rule, then reasons about alignment.
+- **Scope:** Cross-file, cross-module, whole-system.
+- **Cost:** Token cost and latency (expensive).
+- **Strength:** Can assert things no other layer can.
+
+**When and only when to use semantic guards:**
+- The rule is about architectural or behavioral *intent*.
+- The rule spans multiple files and requires contextual reasoning.
+- No unit test or linter can practically assert it.
+- A human code reviewer would need to be present to catch it.
+
+**Examples of semantic guards:**
+- "Every public API must have a usage example in the docstring."
+- "Debits must equal credits before persisting a financial transaction."
+- "New features must be accessible via MCP server before they get a web UI."
+- "Do not silently ignore exceptions — every catch block must log, transform, or rethrow."
+- "Adding a new utility function? Search the codebase first for an equivalent."
+
+---
+
+## Where Semantic Guards Do *Not* Fit
+
+Do not use semantic guards for what deterministic guards do better, faster, and at zero token cost.
+
+| Use Deterministic or Structural | Do Not Use Semantic Guards For |
+|---|---|
+| Import restrictions | "Only use LangChain providers" (use `no-restricted-imports`) |
+| Return-code logic | "Fail the review if any blocker fails" (unit-test the aggregator) |
+| Priority chains | "Resolve model in order: rule > project > env" (unit-test `resolveModel`) |
+| Path matching | "Skip rules when diff doesn't touch the path" (unit-test `startsWith` logic) |
+| Branching logic | "Auto-detect exactly one API key" (unit-test the conditional branches) |
+| API contract shape | "All integrations must be OpenAI-compatible" (type-check the interface) |
+
+**Rule of thumb:** If you can write a unit test or linter rule for it, doing so is more precise, faster, and eliminates LLM hallucination risk.
+
+---
+
+## How to Write Semantic Constraints
+
+Whether you use `hrev`, a custom pipeline, or manual review, follow these guidelines.
+
+### 1. One Rule, One Intent
+
+Don't pack multiple concerns into a single description. Each rule should constrain exactly one behavior.
+
+**Bad:** "New code should be well-tested, follow our design patterns, and include docstrings."
+
+**Good:**
+- "New features must include a test demonstrating the pre-fix failure."
+- "Every new endpoint must create a source document before persisting to an aggregate table."
+
+### 2. Severity Is a Contract
+
+- **`blocker`:** CI fails. The merge is blocked. Use only for architectural or security invariants.
+- **`general`:** Visible to human reviewers, but doesn't block the merge. Use for patterns that need attention.
+- **`nit`:** Optional. Use for style and readability suggestions.
+
+**Bad:** Every rule is `blocker`.
+
+**Good:** A rule is `blocker` because violating it *breaks a system invariant*. Not because it's important, but because it's *load-bearing*.
+
+### 3. Scope with Path Constraints
+
+Only run a rule against diffs that touch the files it cares about. A rule about GitHub Actions shouldn't evaluate a change to your domain models.
+
+**Example:**
+
+```yaml
+- id: prompt-injection-safety
+  description: "Workflows passing untrusted user input to LLM prompts must sanitize or quote the input."
+  severity: blocker
+  path: .github/workflows/
+```
+
+### 4. Keep Descriptions Short
+
+Dense prompts bloat context windows and slow reviews. One or two sentences plus a concrete example per rule is ideal. If you find yourself writing a 200-line specification, split it into multiple focused rules or move the logic into unit tests.
+
+**Good:**
+
+```yaml
+- id: circuit-breaker-required
+  description: |
+    Outbound HTTP calls must use a circuit breaker. Do not add naive
+    `fetch()` or `axios.get()` without timeout, retry-with-backoff, or
+    a circuit breaker abstraction.
+  severity: blocker
+  path: src/services/
+```
+
+**Bad:** A 20-point checklist covering every edge case of circuit breaker behavior. That's a library implementation spec, not a guard intent.
+
+### 5. Examples Beat Explanations
+
+A single concrete example of a violation is more useful than an abstract definition.
+
+**Good:**
+
+```yaml
+- id: no-direct-aggregate-insert
+  description: |
+    Never insert directly into aggregate tables. Create source
+    documents first and use edge methods.
+
+    BAD:  db.insertInto("order_totals").values(data)
+    GOOD: order.createSourceDocument(data)
+```
+
+---
+
 ## How It Runs
 
 Rules are evaluated in parallel via LangGraph. Each node gets:
@@ -196,6 +341,37 @@ Results feed into an aggregator that:
 - Fails the review if any `blocker` rule fails
 - Reports `general` and `nit` violations for human review
 - Summarizes with per-rule reasoning
+
+---
+
+## FAQ
+
+### Why plain English instead of a formal specification language?
+
+Formal specs are precise but brittle. They require learning a DSL and maintenance as the spec language itself evolves. Plain English is understood by every engineer and AI model today. The tradeoff is probabilistic precision — which is acceptable for the cross-file, intent-driven problems semantic guards solve.
+
+### When should I add a rule vs. write a unit test?
+
+If the behavior is deterministic and testable in a single module, write a unit test. If the behavior requires reasoning across files, understanding design rationale, or evaluating tradeoffs that aren't encoded in code, use a semantic guard.
+
+### What if my team doesn't use `hrev`?
+
+The concepts in this document apply regardless of tooling. You can implement the same idea with:
+- A custom CI step that sends the diff and rules to OpenAI, Anthropic, or any other LLM API
+- A manual code review checklist that reviewers follow for every PR
+- A combination of the above, with the checklist automated where possible
+
+The output format (pass/fail + reasoning) is what matters, not the specific implementation.
+
+### How many rules should I have?
+
+Start with 3–5 high-value guards. More rules mean longer reviews and higher token costs. Remove or downgrade rules that produce false positives. A few sharp guards beat a hundred vague ones.
+
+### Should built-in detector rules run alongside my custom rules?
+
+Yes. Built-in detectors catch classes of AI-generated risks (prompt injection, CI gaming, hallucinated correctness) that are easy to miss in custom rule sets. They require no configuration and run automatically.
+
+---
 
 ## License
 
