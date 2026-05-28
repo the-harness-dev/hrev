@@ -31,11 +31,6 @@ rules:
       HREV_MODEL environment variable. Explicitly error if none is specified."
     severity: blocker
     path: src/
-  - id: full-diff-context
-    description: Every LangGraph rule evaluation node must receive the complete git
-      diff as input. Do not partition, truncate, or filter the diff per rule.
-    severity: general
-    path: src/
   - id: auto-detect-exactly-one-key
     description: When auto-detecting API keys, only proceed if exactly one supported
       environment variable is present. If zero or multiple supported variables

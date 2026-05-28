@@ -129,17 +129,32 @@ runs:
     - name: Run code review
       id: hrev
       shell: bash
-      run: |
-        if [ "${{ inputs.verbose }}" = "true" ]; then
-          node ${{ github.action_path }}/dist/cli.js --config ${{ inputs.config-file }} --base ${{ inputs.base-ref }} --verbose --json > "$GITHUB_WORKSPACE/hrev-output.json"
-        else
-          node ${{ github.action_path }}/dist/cli.js --config ${{ inputs.config-file }} --base ${{ inputs.base-ref }} --json > "$GITHUB_WORKSPACE/hrev-output.json"
-        fi
-        cat "$GITHUB_WORKSPACE/hrev-output.json"
       env:
         HREV_API_URL: ${{ inputs.api-url }}
         HREV_API_KEY: ${{ steps.detect.outputs.api_key }}
         HREV_MODEL: ${{ inputs.model }}
+        PR_TITLE: ${{ github.event.pull_request.title }}
+        PR_BODY: ${{ github.event.pull_request.body }}
+      run: |
+        # Build description from PR title and body
+        description=""
+        if [ -n "$PR_TITLE" ]; then
+          description="$PR_TITLE"
+          if [ -n "$PR_BODY" ]; then
+            description="$description"$'\n\n'"$PR_BODY"
+          fi
+        fi
+
+        args=(--config "${{ inputs.config-file }}" --base "${{ inputs.base-ref }}" --json)
+        if [ "${{ inputs.verbose }}" = "true" ]; then
+          args+=(--verbose)
+        fi
+        if [ -n "$description" ]; then
+          args+=(--description "$description")
+        fi
+
+        node "${{ github.action_path }}/dist/cli.js" "${args[@]}" > "$GITHUB_WORKSPACE/hrev-output.json"
+        cat "$GITHUB_WORKSPACE/hrev-output.json"
       continue-on-error: true
 
     - name: Parse results

@@ -1,5 +1,6 @@
 import { StateGraph, Annotation } from "@langchain/langgraph";
 import { callModel } from "./model";
+import { parseJsonFromContent } from "./parse-json";
 import { DocumentedPattern, CodePattern, CodeArea } from "./types";
 import { debug, info, warn, error as logError } from "./logger";
 import { readFileSync, existsSync } from "fs";
@@ -206,30 +207,6 @@ function discoverCodeAreas(projectDir: string): CodeArea[] {
   return areas.slice(0, 5);
 }
 
-function parseJsonResponse(content: string): unknown {
-  const trimmed = content.trim();
-
-  const codeBlockMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
-  if (codeBlockMatch) {
-    try {
-      return JSON.parse(codeBlockMatch[1].trim());
-    } catch {
-      // fall through to raw parse
-    }
-  }
-
-  const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
-}
-
 function resolveModel(projectDir: string): string | undefined {
   let model: string | undefined = process.env.HREV_MODEL;
   const configPath = join(projectDir, "hrev.yml");
@@ -363,7 +340,7 @@ export async function spawnSubAgent(projectDir: string): Promise<RecommendedRule
     try {
       debug("Docs node: analyzing documentation", { contentLen: state.docsContent.length });
       const response = await callModel(DOCS_SYSTEM_PROMPT, state.docsContent, undefined, state.model);
-      const parsed = parseJsonResponse(response.content);
+      const parsed = parseJsonFromContent(response.content);
       const patterns = parsed && typeof parsed === "object" && "patterns" in parsed ? (parsed as Record<string, unknown>).patterns as unknown[] : null;
 
       if (Array.isArray(patterns)) {
@@ -409,7 +386,7 @@ export async function spawnSubAgent(projectDir: string): Promise<RecommendedRule
 
           try {
             const response = await callModel(prompt, area.sampleContents, undefined, state.model);
-            const parsed = parseJsonResponse(response.content);
+            const parsed = parseJsonFromContent(response.content);
             const patterns = parsed && typeof parsed === "object" && "patterns" in parsed ? (parsed as Record<string, unknown>).patterns as unknown[] : null;
 
             if (Array.isArray(patterns)) {
@@ -462,7 +439,7 @@ export async function spawnSubAgent(projectDir: string): Promise<RecommendedRule
       });
 
       const response = await callModel(prompt, "", undefined, state.model);
-      const parsed = parseJsonResponse(response.content);
+      const parsed = parseJsonFromContent(response.content);
       const unmatched = parsed && typeof parsed === "object" && "unmatched" in parsed ? (parsed as Record<string, unknown>).unmatched as unknown[] : [];
 
       if (Array.isArray(unmatched)) {
@@ -489,7 +466,7 @@ export async function spawnSubAgent(projectDir: string): Promise<RecommendedRule
       debug("Generate rules: generating rules from patterns", { count: state.unmatchedPatterns.length });
 
       const response = await callModel(RULES_SYSTEM_PROMPT, userPrompt, undefined, state.model);
-      const parsed = parseJsonResponse(response.content);
+      const parsed = parseJsonFromContent(response.content);
       const rules = parsed && typeof parsed === "object" && "rules" in parsed ? (parsed as Record<string, unknown>).rules as unknown[] : null;
 
       if (Array.isArray(rules)) {
