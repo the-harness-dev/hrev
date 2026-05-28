@@ -285,15 +285,12 @@ function extractVerdict(content: string): { passed: boolean; reasoning: string }
   };
 }
 
-function aggregatorNode(state: typeof ReviewState.State): Partial<typeof ReviewState.State> {
-  const results = state.results;
-  info("Aggregating results", { resultCount: results.length });
+export function aggregateResults(results: ReviewResult[]): { passed: boolean; results: ReviewResult[]; summary: string } {
   const failedBlockers = results.filter((r) => !r.passed && r.severity === "blocker");
   const failedGeneral = results.filter((r) => !r.passed && r.severity === "general");
   const failedNits = results.filter((r) => !r.passed && r.severity === "nit");
 
   const passed = failedBlockers.length === 0;
-  info("Aggregation complete", { passed, blockerFails: failedBlockers.length, generalFails: failedGeneral.length, nitFails: failedNits.length });
 
   const summaryLines: string[] = [
     "═".repeat(60),
@@ -322,11 +319,21 @@ function aggregatorNode(state: typeof ReviewState.State): Partial<typeof ReviewS
   summaryLines.push("", "═".repeat(60));
 
   return {
-    summary: {
-      passed,
-      results,
-      summary: summaryLines.join("\n"),
-    },
+    passed,
+    results,
+    summary: summaryLines.join("\n"),
+  };
+}
+
+function aggregatorNode(state: typeof ReviewState.State): Partial<typeof ReviewState.State> {
+  info("Aggregating results", { resultCount: state.results.length });
+  const failedBlockers = state.results.filter((r) => !r.passed && r.severity === "blocker");
+  const failedGeneral = state.results.filter((r) => !r.passed && r.severity === "general");
+  const failedNits = state.results.filter((r) => !r.passed && r.severity === "nit");
+  const passed = failedBlockers.length === 0;
+  info("Aggregation complete", { passed, blockerFails: failedBlockers.length, generalFails: failedGeneral.length, nitFails: failedNits.length });
+  return {
+    summary: aggregateResults(state.results),
   };
 }
 
