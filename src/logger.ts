@@ -28,7 +28,6 @@ export function getLogPath(): string {
 }
 
 function writeLog(level: string, message: string, data?: Record<string, unknown>): void {
-  const path = getLogPath();
   const ts = new Date().toISOString();
   const pid = process.pid;
   let line = `[${ts}] [${String(pid)}] [${level}] ${message}`;
@@ -36,7 +35,13 @@ function writeLog(level: string, message: string, data?: Record<string, unknown>
     line += ` ${JSON.stringify(data)}`;
   }
   line += "\n";
+
+  // Print to stderr so CI captures it without interfering with --json
+  process.stderr.write(line);
+
+  // Also persist to log file
   try {
+    const path = getLogPath();
     appendFileSync(path, line, "utf-8");
   } catch {
     // silently fail — don't break the app for logging failures
