@@ -34,6 +34,7 @@ export interface DiffFile {
 export interface Diff {
   files: DiffFile[];
   raw: string;
+  description?: string; // Optional description of the change (e.g., PR title/body)
 }
 
 export type PatternCategory = "architecture" | "data" | "security" | "api" | "design";

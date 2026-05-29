@@ -16,6 +16,7 @@ interface ReviewOptions {
   base?: string;
   head?: string;
   diff?: string;
+  description?: string;
   verbose?: boolean;
   json?: boolean;
   debug?: boolean;
@@ -47,6 +48,7 @@ program
   .option("--base <branch>", "Base branch for comparison")
   .option("--head <branch>", "Head branch for comparison")
   .option("--diff <path>", "Path to a pre-generated diff file")
+  .option("-d, --description <text>", "Description of the change (e.g., PR title/body)")
   .option("-v, --verbose", "Show per-rule evaluation details")
   .option("--json", "Output results as JSON for programmatic use")
   .option("--debug", "Enable debug logging to /tmp/hrev-logs/")
@@ -64,6 +66,11 @@ program
         diff = parseDiff(raw);
       } else {
         diff = getGitDiff(options.base, options.head);
+      }
+      
+      // Add description to the diff if provided
+      if (options.description) {
+        diff.description = options.description;
       }
       
       const summary = await runReview(diff, config.rules, config.model, process.cwd());
