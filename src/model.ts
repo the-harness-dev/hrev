@@ -38,7 +38,7 @@ class Semaphore {
 
 const modelSemaphore = new Semaphore(MAX_CONCURRENT_CALLS);
 
-function resolveModel(model?: string, projectModel?: string): string {
+export function resolveModel(model?: string, projectModel?: string): string {
   const resolved = model || projectModel || process.env.HREV_MODEL;
   if (!resolved) {
     throw new Error(

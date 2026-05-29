@@ -73,6 +73,30 @@ HREV_API_KEY=sk-...
 
 ---
 
+## What Belongs in `hrev.yml` vs. Your Test Suite / Lint Config
+
+Use AI rules for **intent and behavior** that a unit test cannot easily assert. Do not use AI rules for **deterministic logic** that a unit test or linter covers more reliably, faster, and at zero API cost.
+
+| Use AI Rules (`hrev.yml`) | Use Unit Tests or Lint Instead |
+|---|---|
+| "Every public API must have a usage example in the docstring" | ✅ Import restrictions (`no-restricted-imports`) |
+| "Do not add utility functions that duplicate existing ones" | ✅ Priority logic like model resolution hierarchy |
+| "New features need both human-readable reasoning and a pass/fail verdict" | ✅ Aggregator pass/fail logic based on severity levels |
+| "Agent nodes must log their prompts, tool calls, and results" | ✅ Path-constraint skip logic (`startsWith` checks) |
+| "Error messages must explain *why*, not just *what*" | ✅ API key auto-detection branching (zero/one/multiple keys) |
+
+### Practical guidelines for defining rules
+
+1. **If you can write a unit test for it, do not make it an AI rule.** AI review costs tokens and time. A Jest or `node:test` assertion runs in milliseconds for free. Examples: priority chains, conditional branches, return-code logic.
+
+2. **If a linter enforces it, do not duplicate it in `hrev.yml`.** `hrev` evaluates plain-English descriptions. A custom ESLint rule with an autofix is more precise and requires no model context window. Examples: restricted imports, code style, naming conventions.
+
+3. **If the rule is about *semantic correctness* or *cross-file relationships*, use AI.** These require understanding intent across context a linter cannot see. Examples: architectural patterns, business rules, design rationale.
+
+4. **Keep descriptions short.** Dense prompts bloat context windows and slow reviews. One or two sentences plus a concrete example per rule is ideal. If you find yourself writing a 200-line prompt, split it into multiple focused rules or move the logic into unit tests.
+
+5. **Use severity levels honestly.** Reserve `blocker` for things that must fail CI. Use `general` for patterns that need human attention but should not block merging. Use `nit` for style and readability suggestions.
+
 ## Usage
 
 ```bash
